@@ -25,9 +25,9 @@ def send_tg_alert(sig):
         if sig['score'] < tg_min:
             return False
         emoji = "🚀" if "PUMP" in sig['type'] else "💥"
-        msg = f"{emoji} BLY7H {sig['type']} {emoji}\n💰 {sig['symbol']} قبل الحركة!\n📊 سكور: {sig['score']}\n💵 الان: {sig['price']}\n🎯 دخول: {sig['best_entry']}\n❌ الغاء: {sig['no_return_point']}\n⛔ ستوب: {sig['stop_loss']}\n✅ هدف1: {sig['TP1']} | هدف2: {sig['TP2']}\n"
+        txt = f"{emoji} BLY7H {sig['type']} {emoji} {sig['symbol']} قبل الحركة! سكور {sig['score']} سعر {sig['price']} دخول {sig['best_entry']}"
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        r = requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=10)
+        r = requests.post(url, json={"chat_id": chat_id, "text": txt}, timeout=10)
         return r.status_code == 200
     except:
         return False
@@ -54,34 +54,45 @@ def save_memory(m):
 def gann_levels(price):
     try:
         s = math.sqrt(price)
-        return [(s + i * 0.25) ** 2 for i in range(-3, 4)]
+        res = []
+        for i in range(-3,4):
+            res.append((s + i*0.25)**2)
+        return res
     except:
         return [price]
 
 def calc_gann(price):
     try:
         levels = gann_levels(price)
-        dist = min([abs(price - l) / price * 100 for l in levels])
-        score = 12 if dist < 0.5 else 7 if dist < 1.5 else 2
-        reason = f"قريب جان {dist:.2f}%"
-        days = (datetime.now() - datetime(2023, 1, 1)).days
+        best = 999
+        for l in levels:
+            d = abs(price - l) / price * 100
+            if d < best:
+                best = d
+        score = 12 if best < 0.5 else 7 if best < 1.5 else 2
+        reason = f"جان {best:.2f}%"
+        days = (datetime.now() - datetime(2023,1,1)).days
         if days % 90 < 3:
             score += 5
-            reason += " + دورة"
-        return min(20, score), reason
+            reason += " دورة"
+        if score > 20:
+            score = 20
+        return score, reason
     except:
         return 5, "جان"
 
 def calc_astro():
     try:
-        new_moon = datetime(2024, 1, 11)
+        new_moon = datetime(2024,1,11)
         days = (datetime.now() - new_moon).days % 29.5
         score = 6 if days < 2 or abs(days - 14.75) < 1.5 else 3 if days < 5 else 1
         reason = f"قمر {days:.0f}"
         if datetime.now().weekday() in [0,4]:
             score += 3
-            reason += " يوم قوي"
-        return min(10, score), reason
+            reason += " قوي"
+        if score > 10:
+            score = 10
+        return score, reason
     except:
         return 2, "فلكي"
 
@@ -97,8 +108,10 @@ def calc_institutional(df, price):
         if price <= low_10 * 1.015:
             score += 10
             reasons.append("AMD")
-        vol_col = 'vol' if 'vol' in df.columns else 'volume'
-        vol_spike = float(df[vol_col].iloc[-1]) / df[vol_col].astype(float).mean()
+        col = 'vol' if 'vol' in df.columns else 'volume'
+        mean_vol = df[col].astype(float).mean()
+        last_vol = float(df[col].iloc[-1])
+        vol_spike = last_vol / mean_vol if mean_vol>0 else 1
         if vol_spike > 2:
             score += 6
             reasons.append(f"Vol x{vol_spike:.1f}")
@@ -106,15 +119,22 @@ def calc_institutional(df, price):
         if price < high_20 and (high_20 - price) / price < 0.03:
             score += 5
             reasons.append("سيولة فوق")
-        return min(30, score), " | ".join(reasons) if reasons else "طبيعية"
+        if score > 30:
+            score = 30
+        txt = " | ".join(reasons) if reasons else "طبيعية"
+        return score, txt
     except:
         return 8, "سيولة"
 
 def calc_smc(df, price):
     try:
-        bull_b = bull_m = None
-        bear_b = bear_m = bear_t = None
-        bull_dist = bear_dist = 999
+        bull_b = None
+        bull_m = None
+        bear_b = None
+        bear_m = None
+        bear_t = None
+        bull_dist = 999
+        bear_dist = 999
         for i in range(1, len(df)-1):
             try:
                 low_next = float(df['low'].iloc[i+1])
@@ -150,16 +170,40 @@ def calc_smc(df, price):
             score += 10
             reasons.append("OB")
         fvg_data = {'bull_b': bull_b, 'bull_m': bull_m, 'bear_b': bear_b, 'bear_m': bear_m, 'bear_t': bear_t}
-        return score, has_fvg, True, fvg_data, recent_low, recent_high, " | ".join(reasons) if reasons else "SMC"
+        txt = " | ".join(reasons) if reasons else "SMC"
+        return score, has_fvg, True, fvg_data, recent_low, recent_high, txt
     except:
         return 15, False, False, {}, price*0.99, price*1.01, "SMC"
 
 def get_symbols_binance():
-    for base in ["https://data-api.binance.vision", "https://api1.binance.com"]:
+    bases = ["https://data-api.binance.vision", "https://api1.binance.com"]
+    for base in bases:
         try:
             r = requests.get(f"{base}/api/v3/ticker/24hr", timeout=15)
             if r.status_code != 200:
                 continue
             data = r.json()
-            usdt = [d for d in data if d.get('symbol','').endswith('USDT')]
-            usdt = sorted(usdt, key
+            usdt = []
+            for d in data:
+                sym = d.get('symbol','')
+                if sym.endswith('USDT'):
+                    usdt.append(d)
+            usdt_sorted = sorted(usdt, key=lambda x: float(x.get('quoteVolume') or 0), reverse=True)
+            res = []
+            for d in usdt_sorted[:400]:
+                res.append(d['symbol'])
+            return res
+        except:
+            continue
+    return []
+
+def get_symbols_okx():
+    try:
+        r = requests.get("https://www.okx.com/api/v5/market/tickers?instType=SPOT", timeout=15)
+        data = r.json()
+        if data.get('code') != '0':
+            return []
+        tickers = data.get('data',[])
+        usdt = []
+        for t in tickers:
+           
