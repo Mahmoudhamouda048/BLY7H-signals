@@ -1,0 +1,6 @@
+pandas
+numpy
+python-binance
+requests
+python-dotenv
+streamlit
