@@ -4,17 +4,19 @@ import requests
 from datetime import datetime
 import time, json, os, math
 
-st.set_page_config(page_title="BLY7H Ultimate Radar", layout="wide", page_icon="🎯")
-st.title("BLY7H Ultimate Radar - Predict BEFORE")
-st.caption("PUMP دخول تحت السعر | DUMP دخول فوق السعر")
+st.set_page_config(page_title="BLY7H PUMP DUMP RADAR", layout="wide", page_icon="💥")
+st.title("💥 BLY7H PUMP DUMP - Predictive OI CVD")
+st.caption("تنبؤ قبل الحركة: OI Divergence + CVD + Vol + FVG + Gann")
 
 st.sidebar.header("Settings")
-min_score = st.sidebar.slider("اقل سكور", 0, 100, 30)
+min_score = st.sidebar.slider("اقل سكور", 0, 100, 55)
 mode = st.sidebar.selectbox("نوع الفحص", ["الكل", "بمب بس", "دمب بس"])
-limit_coins = st.sidebar.slider("عدد العملات", 20, 300, 80)
-use_ai = st.sidebar.checkbox("AI", value=True)
+limit_coins = st.sidebar.slider("عدد العملات", 20, 300, 100)
+filter_stable = st.sidebar.checkbox("فلتر المستقرة", value=True)
 send_tg = st.sidebar.checkbox("تليجرام", value=True)
-tg_min = st.sidebar.slider("سكور التليجرام", 20, 95, 50)
+tg_min = st.sidebar.slider("سكور التليجرام", 20, 95, 70)
+
+STABLES = ["USDCUSDT","USDTUSDT","BUSDUSDT","TUSDUSDT","USDPUSDT","DAIUSDT","FDUSDUSDT","USDeUSDT","USD1USDT","RLUSDUSDT","XUSDUSDT","EURUSDT","PYUSDUSDT","GUSDUSDT","USDXUSDT","USDGUSDT"]
 
 def send_tg_alert(sig):
     try:
@@ -26,18 +28,17 @@ def send_tg_alert(sig):
             return False
         emoji = "🚀" if "PUMP" in sig['type'] else "💥"
         lines = []
-        lines.append(f"{emoji} BLY7H {sig['type']} {emoji}")
-        lines.append(f"💰 {sig['symbol']} - قبل الحركة!")
-        lines.append(f"📊 سكور: {sig['score']} (T:{sig['tech']} L:{sig['liq']} G:{sig['gann']})")
-        lines.append(f"💵 الان: {sig['price']} تغير: {sig['change_1h']}%")
+        lines.append(f"{emoji} BLY7H {sig['type']} PREDICTIVE {emoji}")
+        lines.append(f"💰 {sig['symbol']} - {sig['vol_reason']}")
+        lines.append(f"📊 سكور: {sig['score']} Vol x{sig['vol_spike']} تغير {sig['change_1h']}%")
+        lines.append(f"📈 OI: {sig['oi_reason']}")
+        lines.append(f"💧 CVD: {sig['cvd_reason']}")
+        lines.append(f"💵 الان: {sig['price']}")
         lines.append(f"🎯 دخول: {sig['best_entry']}")
         lines.append(f"❌ الغاء: {sig['no_return_point']}")
         lines.append(f"⛔ ستوب: {sig['stop_loss']}")
         lines.append(f"✅ هدف1: {sig['TP1']} هدف2: {sig['TP2']}")
         lines.append(f"📚 {sig['tech_reason']}")
-        lines.append(f"💧 {sig['liq_reason']}")
-        lines.append(f"📐 {sig['gann_reason']}")
-        lines.append(f"🧠 {sig['ai_reason']}")
         txt = "\n".join(lines)
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         r = requests.post(url, json={"chat_id": chat_id, "text": txt}, timeout=10)
@@ -45,12 +46,11 @@ def send_tg_alert(sig):
     except:
         return False
 
-MEMORY_FILE = "ai_memory.json"
 def load_memory():
-    default = {"patterns": [{"name": "HighVol", "vol": 2.5, "count": 20, "success": 15, "weight": 10}], "total": 0}
+    default = {"total": 0}
     try:
-        if os.path.exists(MEMORY_FILE):
-            with open(MEMORY_FILE, 'r') as f:
+        if os.path.exists("ai_memory.json"):
+            with open("ai_memory.json", 'r') as f:
                 return json.load(f)
     except:
         pass
@@ -58,96 +58,91 @@ def load_memory():
 
 def save_memory(m):
     try:
-        with open(MEMORY_FILE, 'w') as f:
+        with open("ai_memory.json", 'w') as f:
             json.dump(m, f, indent=2)
     except:
         pass
     st.session_state['mem'] = m
 
-def gann_levels(price):
+def get_oi(symbol):
     try:
-        s = math.sqrt(price)
-        res = []
-        for i in range(-3,4):
-            res.append((s + i*0.25)**2)
-        return res
+        # 【entity-Binance¦canonical_name=Binance】 Futures OI
+        r = requests.get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            return float(data.get('openInterest', 0))
     except:
-        return [price]
+        pass
+    return 0
 
-def calc_gann(price):
+def get_oi_history(symbol):
     try:
-        levels = gann_levels(price)
-        best = 999
-        for l in levels:
-            d = abs(price - l) / price * 100
-            if d < best:
-                best = d
-        score = 12 if best < 0.5 else 7 if best < 1.5 else 2
-        reason = f"جان {best:.2f}%"
-        days = (datetime.now() - datetime(2023,1,1)).days
-        if days % 90 < 3:
-            score += 5
-            reason += " دورة"
-        if score > 20:
-            score = 20
-        return score, reason
+        # OI history اخر ساعة
+        r = requests.get(f"https://fapi.binance.com/futures/data/openInterestHist?symbol={symbol}&period=5m&limit=12", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if len(data) >= 2:
+                first = float(data[0]['sumOpenInterest'])
+                last = float(data[-1]['sumOpenInterest'])
+                change = (last - first) / first * 100 if first>0 else 0
+                return change, last
     except:
-        return 5, "جان"
+        pass
+    return 0, 0
 
-def calc_astro():
-    try:
-        new_moon = datetime(2024,1,11)
-        days = (datetime.now() - new_moon).days % 29.5
-        score = 6 if days < 2 or abs(days - 14.75) < 1.5 else 3 if days < 5 else 1
-        reason = f"قمر {days:.0f}"
-        if datetime.now().weekday() in [0,4]:
-            score += 3
-            reason += " قوي"
-        if score > 10:
-            score = 10
-        return score, reason
-    except:
-        return 2, "فلكي"
+def calc_oi_divergence(price_change, oi_change):
+    # OI بيزيد والسعر ثابت او نازل خفيف = تجميع حيتان = بمب جاي
+    # OI بيزيد والسعر طالع = تأكيد بمب
+    # OI بينزل والسعر طالع = ضعف = دمب جاي
+    score = 0
+    reason = "OI طبيعي"
+    if oi_change > 5 and price_change < 1 and price_change > -1:
+        score = 20
+        reason = f"OI +{oi_change:.1f}% والسعر ثابت - تجميع حيتان - بمب قادم"
+    elif oi_change > 3 and price_change > 1:
+        score = 15
+        reason = f"OI +{oi_change:.1f}% + سعر +{price_change:.1f}% - تأكيد بمب"
+    elif oi_change < -3 and price_change > 1:
+        score = -10
+        reason = f"OI {oi_change:.1f}% والسعر طالع - ضعف - دمب محتمل"
+    elif oi_change > 5 and price_change < -1:
+        score = 15
+        reason = f"OI +{oi_change:.1f}% والسعر نازل - تجميع شورت - دمب قادم"
+    return score, reason
 
-def calc_institutional(df, price):
+def calc_cvd(df):
+    # CVD مبسط: لو الشموع الخضرا فوليومها اعلى من الحمرا = شراء
     try:
-        score = 5
-        reasons = []
-        hour_eg = (datetime.utcnow().hour + 2) % 24
-        if hour_eg in [10,11,12,13,16,17,18,19]:
-            score += 7
-            reasons.append("Killzone")
-        low_10 = float(df['low'].iloc[-10:].min())
-        if price <= low_10 * 1.015:
-            score += 10
-            reasons.append("AMD")
-        col = 'vol' if 'vol' in df.columns else 'volume'
-        mean_vol = df[col].astype(float).mean()
-        last_vol = float(df[col].iloc[-1])
-        vol_spike = last_vol / mean_vol if mean_vol>0 else 1
-        if vol_spike > 2:
-            score += 6
-            reasons.append(f"Vol x{vol_spike:.1f}")
-        high_20 = float(df['high'].iloc[-20:].max())
-        if price < high_20 and (high_20 - price) / price < 0.03:
-            score += 5
-            reasons.append("سيولة فوق")
-        if score > 30:
-            score = 30
-        txt = " | ".join(reasons) if reasons else "طبيعية"
-        return score, txt
+        green_vol = 0
+        red_vol = 0
+        for i in range(-10, 0):
+            c = float(df['close'].iloc[i])
+            o = float(df['open'].iloc[i])
+            v = float(df['vol'].iloc[i])
+            if c > o:
+                green_vol += v
+            else:
+                red_vol += v
+        total = green_vol + red_vol
+        if total == 0:
+            return 0, "CVD متوازن"
+        cvd_pct = (green_vol - red_vol) / total * 100
+        if cvd_pct > 30:
+            return 15, f"CVD +{cvd_pct:.0f}% شراء قوي - بمب"
+        elif cvd_pct < -30:
+            return 15, f"CVD {cvd_pct:.0f}% بيع قوي - دمب"
+        elif cvd_pct > 15:
+            return 8, f"CVD +{cvd_pct:.0f}% شراء"
+        elif cvd_pct < -15:
+            return 8, f"CVD {cvd_pct:.0f}% بيع"
+        else:
+            return 0, f"CVD {cvd_pct:.0f}% متوازن"
     except:
-        return 8, "سيولة"
+        return 0, "CVD"
 
 def calc_smc(df, price):
     try:
-        bull_b = None
-        bull_m = None
-        bear_b = None
-        bear_m = None
-        bear_t = None
-        bull_dist = 999
-        bear_dist = 999
+        bull_b = bull_m = bear_b = bear_m = bear_t = None
         for i in range(1, len(df)-1):
             try:
                 low_next = float(df['low'].iloc[i+1])
@@ -156,41 +151,23 @@ def calc_smc(df, price):
                 low_prev = float(df['low'].iloc[i-1])
                 if low_next > high_prev and bull_b is None:
                     bull_b = high_prev
-                    bull_m = (high_prev + low_next) / 2
-                    bull_dist = abs(price - bull_m) / price * 100
+                    bull_m = (high_prev + low_next)/2
                 if high_next < low_prev and bear_b is None:
                     bear_b = high_next
                     bear_t = low_prev
-                    bear_m = (high_next + low_prev) / 2
-                    bear_dist = abs(price - bear_m) / price * 100
+                    bear_m = (high_next + low_prev)/2
             except:
                 pass
         recent_low = float(df['low'].iloc[-10:].min())
         recent_high = float(df['high'].iloc[-10:].max())
-        score = 15
-        has_fvg = bull_b is not None or bear_b is not None
-        reasons = []
-        if bull_b is not None and bull_dist < 4:
-            score += 20
-            reasons.append(f"Bull FVG {bull_dist:.1f}%")
-        elif bear_b is not None and bear_dist < 4:
-            score += 20
-            reasons.append(f"Bear FVG {bear_dist:.1f}%")
-        elif has_fvg:
-            score += 8
-            reasons.append("FVG")
-        if price <= recent_low * 1.02:
-            score += 10
-            reasons.append("OB")
         fvg_data = {'bull_b': bull_b, 'bull_m': bull_m, 'bear_b': bear_b, 'bear_m': bear_m, 'bear_t': bear_t}
-        txt = " | ".join(reasons) if reasons else "SMC"
-        return score, has_fvg, True, fvg_data, recent_low, recent_high, txt
+        has_fvg = bull_b is not None or bear_b is not None
+        return has_fvg, fvg_data, recent_low, recent_high
     except:
-        return 15, False, False, {}, price*0.99, price*1.01, "SMC"
+        return False, {}, price*0.99, price*1.01
 
 def get_symbols_binance():
-    bases = ["https://data-api.binance.vision", "https://api1.binance.com"]
-    for base in bases:
+    for base in ["https://data-api.binance.vision", "https://api1.binance.com"]:
         try:
             r = requests.get(f"{base}/api/v3/ticker/24hr", timeout=15)
             if r.status_code != 200:
@@ -210,41 +187,19 @@ def get_symbols_binance():
             continue
     return []
 
-def get_symbols_okx():
-    try:
-        r = requests.get("https://www.okx.com/api/v5/market/tickers?instType=SPOT", timeout=15)
-        data = r.json()
-        if data.get('code') != '0':
-            return []
-        tickers = data.get('data',[])
-        usdt = []
-        for t in tickers:
-            if t.get('instId','').endswith('-USDT'):
-                usdt.append(t)
-        usdt_sorted = sorted(usdt, key=lambda x: float(x.get('vol24h') or 0), reverse=True)
-        res = []
-        for t in usdt_sorted[:400]:
-            res.append(t['instId'].replace('-',''))
-        return res
-    except:
-        return []
-
 @st.cache_data(ttl=300)
 def get_all_symbols():
     s = get_symbols_binance()
-    src = " binance"
-    if len(s) < 20:
-        s = get_symbols_okx()
-        src = " okx"
     clean = []
     for x in s:
-        if 'BULL' not in x:
+        if 'BULL' not in x and 'BEAR' not in x:
+            if filter_stable and x in STABLES:
+                continue
             clean.append(x)
-    return clean[:400], src
+    return clean[:400], " binance"
 
 def get_klines_binance(sym):
-    bases = ["https://data-api.binance.vision", "https://api1.binance.com"]
-    for base in bases:
+    for base in ["https://data-api.binance.vision", "https://api1.binance.com"]:
         try:
             r = requests.get(f"{base}/api/v3/klines?symbol={sym}&interval=1h&limit=100", timeout=10)
             if r.status_code != 200:
@@ -260,110 +215,121 @@ def get_klines_binance(sym):
             continue
     return None
 
-def get_klines_okx(sym):
-    try:
-        inst = sym.replace('USDT','-USDT')
-        r = requests.get(f"https://www.okx.com/api/v5/market/candles?instId={inst}&bar=1H&limit=100", timeout=10)
-        data = r.json()
-        if data.get('code') != '0':
-            return None
-        klines = data.get('data',[])
-        if len(klines) < 20:
-            return None
-        klines = list(reversed(klines))
-        df = pd.DataFrame(klines, columns=['ts','open','high','low','close','vol','volCcy','volCcyQuote','confirm'])
-        for c in ['high','low','close','open']:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-        return df.dropna()
-    except:
-        return None
-
 @st.cache_data(ttl=90)
 def get_klines(sym):
     df = get_klines_binance(sym)
     if df is not None and len(df) >= 20:
         return df
-    df = get_klines_okx(sym)
-    if df is not None and len(df) >= 20:
-        return df
     return None
 
-def ultimate_score(df, sym, memory):
+def pump_dump_predictive(df, sym):
     try:
         last = float(df['close'].iloc[-1])
         prev = float(df['close'].iloc[-2])
-        change = (last - prev) / prev * 100 if prev != 0 else 0
-        tech, has_fvg, has_ob, fvg_data, rec_low, rec_high, tech_r = calc_smc(df, last)
-        liq, liq_r = calc_institutional(df, last)
-        gann, gann_r = calc_gann(last)
-        astro, astro_r = calc_astro()
-        ai_bonus = 0
-        ai_r = "جديد"
-        if use_ai:
-            col = 'vol' if 'vol' in df.columns else 'volume'
-            mean_vol = df[col].astype(float).mean()
-            last_vol = float(df[col].iloc[-1])
-            vs = last_vol / mean_vol if mean_vol>0 else 1
-            for pat in memory.get('patterns',[]):
-                if abs(vs - pat.get('vol',2)) < 1.5:
-                    ai_bonus = 5
-                    ai_r = pat['name']
-                    break
-        total = tech + liq + gann + astro + ai_bonus
-        if total > 99:
-            total = 99
-        total = int(total)
+        change_1h = (last - prev)/prev*100 if prev!=0 else 0
+        
+        col = 'vol' if 'vol' in df.columns else 'volume'
+        mean_vol = df[col].astype(float).iloc[-20:-1].mean()
+        last_vol = float(df[col].iloc[-1])
+        vol_spike = last_vol / mean_vol if mean_vol>0 else 1
+        
+        # OI الحقيقي
+        oi_change, oi_now = get_oi_history(sym)
+        oi_score, oi_reason = calc_oi_divergence(change_1h, oi_change)
+        
+        # CVD الحقيقي
+        cvd_score, cvd_reason = calc_cvd(df)
+        
+        has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
+        
+        # فلتر بمب ودمب حقيقي فقط
+        if vol_spike < 1.5 and abs(oi_change) < 2 and cvd_score < 5:
+            return None
+        
+        score = 0
+        vol_reason = ""
+        
+        # اساس البمب: OI + CVD + Vol
+        if vol_spike > 2.0 or oi_change > 3 or cvd_score > 8:
+            if change_1h > -1:  # مش نازل جامد
+                if oi_score >= 15 or cvd_score >= 10:
+                    score = 40 + oi_score + cvd_score + min(vol_spike*3, 15)
+                    ptype = "PUMP"
+                    vol_reason = f"PUMP قبل الحركة OI {oi_change:.1f}% CVD {cvd_reason} Vol x{vol_spike:.1f}"
+                elif vol_spike > 2.5 and change_1h > 0.5:
+                    score = 35 + vol_spike*3 + change_1h*2
+                    ptype = "PUMP"
+                    vol_reason = f"PUMP Vol x{vol_spike:.1f} +{change_1h:.1f}%"
+                else:
+                    score = 25 + vol_spike*2
+                    ptype = "PUMP"
+                    vol_reason = f"تجميع Vol x{vol_spike:.1f} قبل بمب"
+            else:
+                score = 30 + vol_spike*3 + abs(change_1h)
+                ptype = "DUMP"
+                vol_reason = f"DUMP Vol x{vol_spike:.1f} {change_1h:.1f}%"
+        elif change_1h < -1.5 and vol_spike > 1.8:
+            score = 35 + abs(change_1h)*2 + vol_spike*2
+            ptype = "DUMP"
+            vol_reason = f"DUMP حقيقي Vol x{vol_spike:.1f} {change_1h:.1f}%"
+        else:
+            return None
+        
+        if has_fvg:
+            score += 10
+        
+        score = min(int(score), 99)
+        
+        if score < min_score:
+            return None
+        
         bull_b = fvg_data.get('bull_b')
         bull_m = fvg_data.get('bull_m')
         bear_b = fvg_data.get('bear_b')
         bear_m = fvg_data.get('bear_m')
         bear_t = fvg_data.get('bear_t')
-        if bull_b is not None and bull_m is not None and abs(last - bull_m) / last * 100 < 5:
-            ptype = "PUMP"
-            best = bull_m
-            no_ret = bull_b * 0.985
-        elif bear_b is not None and bear_m is not None and abs(last - bear_m) / last * 100 < 5:
-            ptype = "DUMP"
-            best = bear_m
-            no_ret = bear_t * 1.015 if bear_t else last * 1.02
-        else:
-            ptype = "PUMP" if change >= -0.3 else "DUMP"
-            if ptype == "PUMP":
-                best = last * 0.994
-                no_ret = rec_low * 0.985
-            else:
-                best = last * 1.006
-                no_ret = rec_high * 1.015
+        
         if ptype == "PUMP":
-            if best > last * 0.998:
-                best = last * 0.998
-            stop = no_ret * 0.994
-            tp1 = best * 1.028
-            tp2 = best * 1.065
-            if tp1 <= last:
-                tp1 = last * 1.02
-            if tp2 <= tp1:
-                tp2 = tp1 * 1.03
+            if bull_b is not None and bull_m is not None:
+                best = bull_m
+                no_ret = bull_b * 0.985
+            else:
+                best = last * 0.993
+                no_ret = rec_low * 0.98
+            best = min(best, last * 0.998)
+            stop = no_ret * 0.99
+            tp1 = last * 1.04
+            tp2 = last * 1.08
+            if stop >= best:
+                stop = best * 0.97
+            if no_ret >= best:
+                no_ret = best * 0.985
         else:
-            if best < last * 1.002:
-                best = last * 1.002
-            stop = no_ret * 1.006
-            tp1 = best * 0.972
-            tp2 = best * 0.935
-            if tp1 >= last:
-                tp1 = last * 0.98
-            if tp2 >= tp1:
-                tp2 = tp1 * 0.97
+            if bear_b is not None and bear_m is not None:
+                best = bear_m
+                no_ret = bear_t * 1.015 if bear_t else last * 1.02
+            else:
+                best = last * 1.007
+                no_ret = rec_high * 1.02
+            best = max(best, last * 1.002)
+            stop = no_ret * 1.01
+            tp1 = last * 0.96
+            tp2 = last * 0.92
+            if stop <= best:
+                stop = best * 1.03
+            if no_ret <= best:
+                no_ret = best * 1.015
+        
         return {
-            'symbol': sym, 'score': total, 'tech': tech, 'liq': liq, 'gann': gann, 'astro': astro,
-            'ai_bonus': int(ai_bonus), 'type': ptype, 'price': round(last,6),
-            'change_1h': round(change,2), 'best_entry': round(best,6),
+            'symbol': sym, 'score': score, 'type': ptype, 'price': round(last,6),
+            'change_1h': round(change_1h,2), 'vol_spike': round(vol_spike,2),
+            'oi_change': round(oi_change,2), 'best_entry': round(best,6),
             'no_return_point': round(no_ret,6), 'stop_loss': round(stop,6),
-            'TP1': round(tp1,6), 'TP2': round(tp2,6), 'has_fvg': has_fvg, 'has_ob': has_ob,
-            'liq_reason': liq_r, 'gann_reason': gann_r, 'astro_reason': astro_r,
-            'ai_reason': ai_r, 'tech_reason': tech_r
+            'TP1': round(tp1,6), 'TP2': round(tp2,6), 'has_fvg': has_fvg,
+            'tech_reason': "FVG" if has_fvg else "No FVG",
+            'vol_reason': vol_reason, 'oi_reason': oi_reason, 'cvd_reason': cvd_reason
         }
-    except:
+    except Exception as e:
         return None
 
 if 'mem' not in st.session_state:
@@ -371,27 +337,18 @@ if 'mem' not in st.session_state:
 memory = st.session_state['mem']
 
 if st.sidebar.button("اختبار تليجرام"):
-    test_sig = {}
-    test_sig['symbol'] = 'TESTUSDT'
-    test_sig['score'] = 80
-    test_sig['type'] = 'PUMP'
-    test_sig['price'] = 1
-    test_sig['best_entry'] = 0.99
-    test_sig['no_return_point'] = 0.98
-    test_sig['stop_loss'] = 0.97
-    test_sig['TP1'] = 1.02
-    test_sig['TP2'] = 1.05
+    test_sig = {'symbol':'TESTUSDT','score':80,'type':'PUMP','price':1,'change_1h':2,'vol_spike':3,'best_entry':0.99,'no_return_point':0.98,'stop_loss':0.97,'TP1':1.04,'TP2':1.08,'tech_reason':'FVG','vol_reason':'PUMP','oi_reason':'OI +5% تجميع','cvd_reason':'CVD شراء'}
     if send_tg_alert(test_sig):
-        st.sidebar.success("تليجرام شغال!")
+        st.sidebar.success("شغال!")
     else:
         st.sidebar.error("فشل")
 
-if st.button("افحص قبل الحركة", type="primary"):
+if st.button("💥 افحص تنبؤ OI + CVD", type="primary"):
     st.cache_data.clear()
     st.rerun()
 
 symbols, src = get_all_symbols()
-st.write(f"تم جلب {len(symbols)} عملة من {src} - هيفحص اول {limit_coins}")
+st.write(f"تم جلب {len(symbols)} عملة - هيفحص اول {limit_coins} - تنبؤ قبل الحركة OI + CVD + Vol")
 
 to_scan = symbols[:limit_coins]
 results = []
@@ -399,18 +356,18 @@ prog = st.progress(0)
 stat = st.empty()
 for i, sym in enumerate(to_scan):
     prog.progress((i+1)/len(to_scan))
-    stat.text(f"يفحص: {sym} {i+1}/{len(to_scan)}")
+    stat.text(f"يفحص OI CVD: {sym} {i+1}/{len(to_scan)}")
     df = get_klines(sym)
     if df is not None:
-        res = ultimate_score(df, sym, memory)
-        if res and res['score'] >= min_score:
+        res = pump_dump_predictive(df, sym)
+        if res:
             if mode == "بمب بس" and res['type'] != "PUMP":
                 pass
             elif mode == "دمب بس" and res['type'] != "DUMP":
                 pass
             else:
                 results.append(res)
-    time.sleep(0.02)
+    time.sleep(0.05)
 prog.empty()
 stat.empty()
 
@@ -421,10 +378,10 @@ if results:
 
 if results:
     df_res = pd.DataFrame(results).sort_values('score', ascending=False)
-    st.success(f"تنبؤ {len(df_res)} عملة")
+    st.success(f"💥 {len(df_res)} تنبؤ قبل الحركة OI + CVD")
     c1,c2 = st.columns(2)
-    c1.metric("بمب", len([r for r in results if r['type']=='PUMP']))
-    c2.metric("دمب", len([r for r in results if r['type']=='DUMP']))
+    c1.metric("🚀 بمب قبل", len([r for r in results if r['type']=='PUMP']))
+    c2.metric("💥 دمب قبل", len([r for r in results if r['type']=='DUMP']))
     st.dataframe(df_res, use_container_width=True)
     if send_tg:
         sent = 0
@@ -436,7 +393,8 @@ if results:
             st.success(f"اتبعت {sent} للتليجرام!")
     top = df_res.iloc[0]
     st.divider()
-    st.subheader(f"افضل: {top['symbol']} {top['type']} سكور {top['score']}")
+    st.subheader(f"🎯 افضل تنبؤ: {top['symbol']} {top['type']} سكور {top['score']}")
+    st.info(f"{top['oi_reason']} | {top['cvd_reason']}")
     c1,c2,c3 = st.columns(3)
     c1.metric("السعر", f"{top['price']}")
     c1.metric("دخول", f"{top['best_entry']}")
@@ -444,5 +402,9 @@ if results:
     c2.metric("ستوب", f"{top['stop_loss']}")
     c3.metric("هدف1", f"{top['TP1']}")
     c3.metric("هدف2", f"{top['TP2']}")
+    if top['type'] == "PUMP":
+        st.success(f"PUMP قبل الحركة: دخول تحت {top['price']} - OI {top['oi_change']}% - {top['vol_reason']}")
+    else:
+        st.error(f"DUMP قبل الحركة: دخول فوق {top['price']} - OI {top['oi_change']}% - {top['vol_reason']}")
 else:
-    st.error(f"مفيش فوق {min_score} - نزله لـ 20")
+    st.warning(f"مفيش تنبؤ قوي فوق {min_score} - نزله لـ 50 او استنى تجميع حيتان")
