@@ -25,7 +25,20 @@ def send_tg_alert(sig):
         if sig['score'] < tg_min:
             return False
         emoji = "🚀" if "PUMP" in sig['type'] else "💥"
-        txt = f"{emoji} BLY7H {sig['type']} {emoji} {sig['symbol']} قبل الحركة! سكور {sig['score']} سعر {sig['price']} دخول {sig['best_entry']}"
+        lines = []
+        lines.append(f"{emoji} BLY7H {sig['type']} {emoji}")
+        lines.append(f"💰 {sig['symbol']} - قبل الحركة!")
+        lines.append(f"📊 سكور: {sig['score']} (T:{sig['tech']} L:{sig['liq']} G:{sig['gann']})")
+        lines.append(f"💵 الان: {sig['price']} تغير: {sig['change_1h']}%")
+        lines.append(f"🎯 دخول: {sig['best_entry']}")
+        lines.append(f"❌ الغاء: {sig['no_return_point']}")
+        lines.append(f"⛔ ستوب: {sig['stop_loss']}")
+        lines.append(f"✅ هدف1: {sig['TP1']} هدف2: {sig['TP2']}")
+        lines.append(f"📚 {sig['tech_reason']}")
+        lines.append(f"💧 {sig['liq_reason']}")
+        lines.append(f"📐 {sig['gann_reason']}")
+        lines.append(f"🧠 {sig['ai_reason']}")
+        txt = "\n".join(lines)
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         r = requests.post(url, json={"chat_id": chat_id, "text": txt}, timeout=10)
         return r.status_code == 200
