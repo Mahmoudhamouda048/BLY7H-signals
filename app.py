@@ -6,25 +6,94 @@ import time
 import json
 import os
 
-st.set_page_config(page_title="BLY7H Signals - AI Self Learning", layout="wide", page_icon="🧠")
-st.title("🧠 BLY7H Signals - AI Self-Learning")
-st.markdown("**【entity-Binance¦canonical_name=Binance】 + 【entity-OKX¦canonical_name=OKX】 + 【entity-Bybit¦canonical_name=Bybit】 + AI Memory**")
+st.set_page_config(page_title="BLY7H Signals - AI + Telegram", layout="wide", page_icon="🧠")
+st.title("🧠 BLY7H Signals - AI Self-Learning + Telegram")
+st.markdown("【entity-Binance¦canonical_name=Binance】 + 【entity-OKX¦canonical_name=OKX】 + 【entity-Bybit¦canonical_name=Bybit】 + AI Memory + Telegram Alerts")
 
 st.sidebar.header("⚙️ الاعدادات")
-min_score = st.sidebar.slider("اقل سكور", 0, 100, 40)
+min_score = st.sidebar.slider("اقل سكور يظهر", 0, 100, 40)
 mode = st.sidebar.selectbox("نوع الفحص", ["الكل (بمب و دمب)", "بمب بس", "دمب بس"])
 limit_coins = st.sidebar.slider("عدد العملات", 20, 300, 100)
-use_ai = st.sidebar.checkbox("🧠 فعل الذكاء الاصطناعي", value=True)
+use_ai = st.sidebar.checkbox("🧠 AI", value=True)
+send_tg = st.sidebar.checkbox("📱 ابعت تليجرام", value=True)
+tg_min_score = st.sidebar.slider("سكور التليجرام", 60, 95, 70)
 
+# ========== TELEGRAM ==========
+def send_telegram_alert(signal):
+    try:
+        # جرب من secrets
+        bot_token = None
+        chat_id = None
+        try:
+            bot_token = st.secrets["TELEGRAM_BOT_TOKEN"]
+            chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        except Exception:
+            # جرب من env
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        
+        if not bot_token or not chat_id:
+            st.sidebar.error("❌ مفيش توكن تليجرام في Secrets")
+            return False
+        
+        if signal['score'] < tg_min_score:
+            return False
+        
+        emoji = "🚀" if signal['type'] in ["PUMP","UP"] else "💥"
+        msg = f"""{emoji} BLY7H AI SIGNAL {emoji}
+
+💰 {signal['symbol']} - {signal['type']}
+📊 سكور: {signal['score']} (base {signal['base_score']} + AI {signal['ai_bonus']})
+💵 السعر: {signal['price']}
+📈 تغير 1س: {signal['change_1h']}%
+📦 فوليوم x{signal['vol_spike']}
+
+🎯 دخول: {signal['best_entry']}
+❌ الغاء: {signal['no_return_point']}
+⛔ ستوب: {signal['stop_loss']}
+✅ هدف1: {signal['TP1']}
+✅ هدف2: {signal['TP2']}
+
+🧠 AI: {signal['ai_reasons']}
+FVG: {'نعم' if signal['has_fvg'] else 'لا'}
+
+⏰ {datetime.now().strftime('%H:%M:%S %d-%m-%Y')}
+"""
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        r = requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=15)
+        if r.status_code == 200:
+            st.sidebar.success(f"✅ اتبعت {signal['symbol']} للتليجرام")
+            return True
+        else:
+            st.sidebar.error(f"❌ فشل تليجرام: {r.text[:100]}")
+            return False
+    except Exception as e:
+        st.sidebar.error(f"❌ خطأ تليجرام: {str(e)[:100]}")
+        return False
+
+def test_telegram():
+    try:
+        bot_token = st.secrets["TELEGRAM_BOT_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        r = requests.post(url, json={"chat_id": chat_id, "text": "✅ BLY7H Scanner متصل بالتليجرام ويعمل!"}, timeout=10)
+        if r.status_code == 200:
+            st.success("✅ رسالة اختبار اتبعتت للتليجرام!")
+        else:
+            st.error(f"فشل: {r.text}")
+    except Exception as e:
+        st.error(f"خطأ: {e} - تأكد من Secrets")
+
+# ========== AI MEMORY ==========
 MEMORY_FILE = "ai_memory.json"
 
 def load_ai_memory():
     default = {
         "patterns": [
-            {"id": 1, "name": "HighVol Pump", "vol_min": 2.5, "change_min": 2.0, "has_fvg": True, "count": 18, "success": 14, "weight": 15, "avg_profit": 4.2},
-            {"id": 2, "name": "FVG Breakout", "vol_min": 1.5, "change_min": 1.0, "has_fvg": True, "count": 25, "success": 19, "weight": 15, "avg_profit": 3.8},
-            {"id": 3, "name": "Strong Momentum", "vol_min": 1.8, "change_min": 3.0, "has_fvg": False, "count": 30, "success": 20, "weight": 12, "avg_profit": 3.1},
-            {"id": 4, "name": "Dump Volume", "vol_min": 2.0, "change_min": -2.0, "has_fvg": False, "count": 15, "success": 12, "weight": 13, "avg_profit": -3.5},
+            {"id": 1, "name": "HighVol Pump", "vol_min": 2.5, "change_min": 2.0, "has_fvg": True, "count": 18, "success": 14, "weight": 15},
+            {"id": 2, "name": "FVG Breakout", "vol_min": 1.5, "change_min": 1.0, "has_fvg": True, "count": 25, "success": 19, "weight": 15},
+            {"id": 3, "name": "Strong Momentum", "vol_min": 1.8, "change_min": 3.0, "has_fvg": False, "count": 30, "success": 20, "weight": 12},
+            {"id": 4, "name": "Dump Volume", "vol_min": 2.0, "change_min": -2.0, "has_fvg": False, "count": 15, "success": 12, "weight": 13},
         ],
         "history": [],
         "total_scans": 0
@@ -64,15 +133,14 @@ def ai_predict(df, base_score, memory):
                     break
             except Exception:
                 pass
-        current = {"vol_spike": vol_spike, "change_1h": change_1h, "has_fvg": has_fvg}
         bonus = 0
         reasons = []
         best = None
         for pat in memory.get('patterns',[]):
-            vol_diff = abs(current['vol_spike'] - pat['vol_min'])
-            change_diff = abs(current['change_1h'] - pat['change_min'])
+            vol_diff = abs(vol_spike - pat['vol_min'])
+            change_diff = abs(change_1h - pat['change_min'])
             sim = vol_diff*0.5 + abs(change_diff)*0.3
-            if pat['has_fvg'] != current['has_fvg']:
+            if pat['has_fvg'] != has_fvg:
                 sim += 2
             if sim < 2.5:
                 success_rate = pat['success']/pat['count'] if pat['count']>0 else 0.5
@@ -276,6 +344,10 @@ ai_memory = st.session_state['ai_memory']
 
 st.sidebar.markdown(f"**🧠 AI Memory:** {ai_memory.get('total_scans',0)} فحص")
 
+# زر اختبار تليجرام
+if st.sidebar.button("📱 اختبار التليجرام"):
+    test_telegram()
+
 if st.button("🔍 افحص السوق كله بالذكاء الاصطناعي", type="primary"):
     st.cache_data.clear()
     st.rerun()
@@ -312,8 +384,20 @@ if results:
 
 if results:
     df_res = pd.DataFrame(results).sort_values('score', ascending=False)
-    st.success(f"✅ لقينا {len(df_res)} عملة - AI قارن بـ {len(ai_memory['patterns'])} نمط")
+    st.success(f"✅ لقينا {len(df_res)} عملة")
     st.dataframe(df_res, use_container_width=True)
+    
+    # ابعت تليجرام لافضل العملات
+    if send_tg:
+        sent = 0
+        for sig in df_res.head(5).to_dict('records'):
+            if sig['score'] >= tg_min_score:
+                if send_telegram_alert(sig):
+                    sent += 1
+                    time.sleep(0.5)
+        if sent > 0:
+            st.success(f"📱 اتبعت {sent} رسالة للتليجرام!")
+    
     top = df_res.iloc[0]
     st.divider()
     st.subheader(f"🎯 افضل فرصة: {top['symbol']} - {top['type']} - سكور {top['score']}")
@@ -324,8 +408,7 @@ if results:
     c2.metric("ستوب", f"{top['stop_loss']}")
     c3.metric("هدف 1", f"{top['TP1']}")
     c3.metric("هدف 2", f"{top['TP2']}")
-    st.warning(f"لو كسر {top['no_return_point']} اخرج فورا")
 else:
     st.error(f"مفيش عملات فوق سكور {min_score}")
 
-st.caption("🧠 AI Self-Learning + ضد الحظر + SMC")
+st.caption("🧠 AI + Telegram + ضد الحظر + SMC")
