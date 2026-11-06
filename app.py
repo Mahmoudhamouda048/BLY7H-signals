@@ -133,7 +133,7 @@ def get_all_symbols():
             if filter_stable and x in STABLES:
                 continue
             clean.append(x)
-    return clean[:400], " binance"
+    return clean[:400], " 【entity-binance¦canonical_name=binance】"
 
 def get_klines_binance(sym):
     for base in ["https://data-api.binance.vision", "https://api1.binance.com"]:
@@ -272,8 +272,126 @@ def check_dex_pump(token_address):
     except:
         return None
 
+# ========== 【entity-KUCOIN¦canonical_name=KUCOIN】 FUNCTIONS - جديد 4x و 5x ==========
+def get_kucoin_symbols():
+    try:
+        r = requests.get("https://api.kucoin.com/api/v1/market/allTickers", timeout=15)
+        data = r.json().get('data', {}).get('ticker', [])
+        usdt = []
+        for d in data:
+            sym = d.get('symbol','')
+            if not sym.endswith('-USDT'):
+                continue
+            if 'USDC' in sym or 'DAI' in sym or 'BUSD' in sym:
+                continue
+            usdt.append(d)
+        usdt_sorted = sorted(usdt, key=lambda x: float(x.get('volValue') or 0), reverse=True)
+        res = []
+        for d in usdt_sorted[:120]:
+            res.append(d['symbol'])
+        return res
+    except:
+        return []
+
+@st.cache_data(ttl=90)
+def get_kucoin_klines(sym):
+    try:
+        end = int(time.time())
+        start = end - 100*3600
+        url = f"https://api.kucoin.com/api/v1/market/candles?type=1hour&symbol={sym}&startAt={start}&endAt={end}"
+        r = requests.get(url, timeout=10)
+        data = r.json().get('data', [])
+        if len(data) < 20:
+            return None
+        df = pd.DataFrame(data, columns=['time','open','close','high','low','vol','turnover'])
+        for c in ['open','close','high','low','vol']:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        df = df.sort_values('time')
+        return df.dropna()
+    except:
+        return None
+
+def pump_dump_kucoin(df, sym):
+    # نفس منطق CEX بس من غير OI - لان كوكوين مفيهوش OI API
+    try:
+        last = float(df['close'].iloc[-1])
+        prev = float(df['close'].iloc[-2])
+        change_1h = (last - prev)/prev*100 if prev!=0 else 0
+        # تغيير 24 ساعة - لكشف 4x و 5x
+        if len(df) >= 24:
+            first24 = float(df['close'].iloc[-24])
+            change_24 = (last - first24)/first24*100 if first24!=0 else 0
+        else:
+            change_24 = 0
+        mean_vol = float(df['vol'].iloc[-20:-1].mean())
+        last_vol = float(df['vol'].iloc[-1])
+        vol_spike = last_vol / mean_vol if mean_vol>0 else 1
+        cvd_score, cvd_reason = calc_cvd(df)
+        has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
+        # كوكوين: لو عمل 100%+ في 24س او Vol انفجر
+        is_moon = change_24 > 80 or vol_spike > 3
+        if vol_spike < 1.5 and cvd_score < 5 and not is_moon:
+            return None
+        score = 0
+        if is_moon or vol_spike > 2.0 or cvd_score > 8:
+            if change_1h > -1:
+                score = 40 + cvd_score + min(vol_spike*3, 15)
+                if change_24 > 100:
+                    score += 20  # بونص 4x
+                if change_24 > 300:
+                    score += 15  # بونص 5x
+                ptype = "PUMP KUCOIN 4x"
+                vol_reason = f"KUCOIN PUMP {change_24:.0f}% 24س Vol x{vol_spike:.1f}"
+            else:
+                score = 30 + vol_spike*3 + abs(change_1h)
+                ptype = "DUMP KUCOIN"
+                vol_reason = f"KUCOIN DUMP Vol x{vol_spike:.1f}"
+        elif change_1h < -1.5 and vol_spike > 1.8:
+            score = 35 + abs(change_1h)*2 + vol_spike*2
+            ptype = "DUMP KUCOIN"
+            vol_reason = f"KUCOIN DUMP حقيقي Vol x{vol_spike:.1f}"
+        else:
+            return None
+        if has_fvg:
+            score += 10
+        score = min(int(score), 99)
+        if score < min_score:
+            return None
+        bull_b = fvg_data.get('bull_b')
+        bull_m = fvg_data.get('bull_m')
+        bear_m = fvg_data.get('bear_m')
+        bear_t = fvg_data.get('bear_t')
+        if "PUMP" in ptype:
+            best = bull_m if bull_m is not None else last * 0.993
+            no_ret = bull_b * 0.985 if bull_b else rec_low * 0.98
+            best = min(best, last * 0.998)
+            stop = no_ret * 0.99
+            tp1 = last * 1.04
+            tp2 = last * 1.08
+            if stop >= best:
+                stop = best * 0.97
+        else:
+            best = bear_m if bear_m is not None else last * 1.007
+            no_ret = bear_t * 1.015 if bear_t else rec_high * 1.02
+            best = max(best, last * 1.002)
+            stop = no_ret * 1.01
+            tp1 = last * 0.96
+            tp2 = last * 0.92
+            if stop <= best:
+                stop = best * 1.03
+        return {
+            'symbol': sym, 'score': score, 'type': ptype, 'price': round(last,6),
+            'change_1h': round(change_1h,2), 'change_24h': round(change_24,1), 'vol_spike': round(vol_spike,2),
+            'oi_change': 0, 'best_entry': round(best,6),
+            'no_return_point': round(no_ret,6), 'stop_loss': round(stop,6),
+            'TP1': round(tp1,6), 'TP2': round(tp2,6), 'vol_reason': vol_reason,
+            'oi_reason': "KUCOIN -", 'cvd_reason': cvd_reason
+        }
+    except:
+        return None
+
 # ========== UI TABS ==========
-tab1, tab2 = st.tabs(["💥 CEX PUMP DUMP (OI + CVD)", "🚀 DEX EARLY (قبل المنصات)"])
+tab1, tab2, tab3 = st.tabs(["💥 CEX PUMP DUMP (OI + CVD)", "🚀 DEX EARLY (قبل المنصات)", "🔥 KUCOIN 4x 5x"])
 
 with tab1:
     st.subheader("CEX - تنبؤ قبل الحركة OI + CVD + Vol")
@@ -341,3 +459,39 @@ with tab2:
                     st.warning("مفيش بمب DEX قوي")
             except Exception as e:
                 st.error(f"خطأ: {e}")
+
+with tab3:
+    st.subheader("🔥 KUCOIN - عملات 4x و 5x في اليوم")
+    st.write("كوكوين فيها عملات صغيرة بتعمل 400% - 500% - نفس ادوات CEX بس من غير OI")
+    if st.button("🔥 افحص KUCOIN", type="primary", key="kucoin"):
+        ksyms = get_kucoin_symbols()
+        st.write(f"تم جلب {len(ksyms)} عملة كوكوين - هيفحص اول {limit_coins}")
+        kresults = []
+        prog2 = st.progress(0)
+        stat2 = st.empty()
+        for i, sym in enumerate(ksyms[:limit_coins]):
+            prog2.progress((i+1)/min(len(ksyms[:limit_coins]), limit_coins))
+            stat2.text(f"【entity-KUCOIN¦canonical_name=KUCOIN】: {sym} {i+1}/{len(ksyms[:limit_coins])}")
+            dfk = get_kucoin_klines(sym)
+            if dfk is not None:
+                resk = pump_dump_kucoin(dfk, sym)
+                if resk:
+                    kresults.append(resk)
+            time.sleep(0.05)
+        prog2.empty()
+        stat2.empty()
+        if kresults:
+            df_k = pd.DataFrame(kresults).sort_values('score', ascending=False)
+            st.success(f"🔥 {len(df_k)} تنبؤ KUCOIN 4x")
+            st.dataframe(df_k, use_container_width=True)
+            if send_tg:
+                sent = 0
+                for sig in df_k.head(5).to_dict('records'):
+                    txt = f"🔥 BLY7H KUCOIN {sig['type']} {sig['symbol']}!\nسكور {sig['score']} Vol x{sig['vol_spike']} {sig['change_24h']}% في 24س\nسعر {sig['price']} دخول {sig['best_entry']} ستوب {sig['stop_loss']} هدف {sig['TP1']}"
+                    if send_tg_alert(txt):
+                        sent += 1
+                        time.sleep(1)
+                if sent > 0:
+                    st.success(f"اتبعت {sent} للتليجرام!")
+        else:
+            st.warning("مفيش 4x دلوقتي على كوكوين")
