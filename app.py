@@ -926,13 +926,19 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# FIX: كل الاقسام شغالة على طول - مش مربوطة باختيار السايد بار
-# السبب اللي كان بيخلي باقي الاقسام مش شغالة: لو اخترت KUCOIN فقط كان بيخفي CEX و DEX وبيحط None مكانهم
-tab1, tab2, tab3, tab_dump, tab4, tab5 = st.tabs(["🔥 KUCOIN PUMP", "💥 CEX", "🚀 DEX", "📉 DUMP - انهيار", "📊 باك تست", "🧠 ذاكرة التعلم"])
-tabs = [tab1, tab2, tab3, tab4, tab5]
-tab_dump_obj = tab_dump
+# FIX V12: شلنا التابات خالص - التابات على الموبايل بتعلق وبتفتح فاضي
+# بدلها: قائمة اختيار واحدة - تدوس على القسم يفتح على طول - مضمونة 100%
+st.markdown("### 📂 اختار القسم - دوس عليه يفتح")
+section = st.radio("📂 القسم", ["🔥 KUCOIN PUMP", "💥 CEX", "🚀 DEX", "📉 DUMP - انهيار", "📊 باك تست", "🧠 ذاكرة التعلم"], horizontal=True, label_visibility="collapsed")
+st.markdown("---")
+# توافق مع الكود القديم: نعمل tabs وهمية مش هنستخدمها
+class _Dummy:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+tabs = [_Dummy(), _Dummy(), _Dummy(), _Dummy(), _Dummy()]
+tab_dump_obj = _Dummy()
 
-with tabs[0]:
+if section == "🔥 KUCOIN PUMP":
     st.markdown("### 🔥 KUCOIN - تجميع قبل البمب")
     st.caption("العملات اللي الحيتان بتجمع فيها قبل ما تطلع 4x - 5x")
     st.info("🛡️ الوضع الصارم: Vol x2.5 + CVD قوي + سكور 70+ - بيجيب قليل بس اللي بيجيبه متأكد. لو عايز تجرب خلي السكور 20، لو عايز الجامد بس سيبه 70.")
@@ -967,8 +973,7 @@ with tabs[0]:
         else:
             st.warning("🛡️ مفيش تجميع جامد دلوقتي - البوت صارم ومش بيبعت اي حاجة. دي مصلحتنا - التأكيدات هتبقى اقوى. استنى السوق يولع وهتلاقي الاشارة الجامدة.")
 
-if focus != "🔥 KUCOIN فقط":
-    with tabs[1]:
+if section == "💥 CEX":
         st.markdown("### 💥 CEX - تنبؤ قبل الحركة")
         st.caption("بينانس + تأكيد 5 منصات + OI + CVD")
         if st.button("💥 افحص CEX الآن", type="primary", key="cex"):
@@ -1003,7 +1008,7 @@ if focus != "🔥 KUCOIN فقط":
                         st.success(f"اتبعت {sig['symbol']}")
                         time.sleep(1)
 
-    with tabs[2]:
+if section == "🚀 DEX":
         st.markdown("### 🚀 DEX - قبل المنصات")
         st.caption("عملات لسه نازلة - قبل ما تنزل على بينانس وكوكوين")
         if st.button("🚀 افحص DEX الآن", type="primary", key="dex"):
@@ -1047,7 +1052,7 @@ if focus != "🔥 KUCOIN فقط":
                 except Exception as e:
                     st.error(f"خطأ: {e}")
 
-with tab_dump_obj:
+if section == "📉 DUMP - انهيار":
     st.markdown("### 📉 DUMP - انهيار قادم")
     st.caption("الحيتان بتوزع - بيع قوي + Vol احمر + FVG هابط - انهيار داخل على العملة")
     if ai_filter == "صارم":
@@ -1112,8 +1117,7 @@ with tab_dump_obj:
             else:
                 st.warning("🛡️ مفيش دامب صارم دلوقتي")
 
-backtest_tab = tabs[3]
-with backtest_tab:
+if section == "📊 باك تست":
     st.markdown("### 📊 باك تست - نسبة نجاح حقيقية")
     st.caption("بيرجع 500 شمعة ورا ويشوف الاشارات القديمة كانت هتنجح ولا لا")
     test_sym = st.selectbox("🪙 اختار عملة للباك تست", ["BTCUSDT", "ETHUSDT", "CRVUSDT", "XAUTUSDT", "SOLUSDT"], key="bt_sym")
@@ -1134,8 +1138,7 @@ with backtest_tab:
             if res["trades"]:
                 st.dataframe(pd.DataFrame(res["trades"]), use_container_width=True)
 
-learn_tab = tabs[4]
-with learn_tab:
+if section == "🧠 ذاكرة التعلم":
     st.markdown("### 🧠 ذاكرة التعلم - البوت بيتعلم من كل اشارة")
     st.caption("كل اشارة بيبعتها بيحفظ نتيجتها - والنمط اللي بينجح بياخد بونص اكتر")
     mem2 = load_memory()
