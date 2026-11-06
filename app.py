@@ -5,7 +5,7 @@ import requests
 from datetime import datetime
 import time, json, os
 
-st.set_page_config(page_title="BLY7H ULTIMATE", layout="wide", page_icon="💎")
+st.set_page_config(page_title="BLY7H ULTIMATE V10 - اختار مزاياك", layout="wide", page_icon="💎")
 
 st.markdown("""
 <style>
@@ -49,23 +49,52 @@ section[data-testid="stSidebar"] { background: #0f1530 !important; }
 
 st.markdown("""
 <div class="hero">
-  <h1>💎 BLY7H ULTIMATE</h1>
+  <h1>💎 BLY7H ULTIMATE V10 - اختار مزاياك</h1>
   <p>🧠 ذكاء اصطناعي يتعلم | 🔮 تنبؤ قبل الحركة | ✅ تأكيد 5 منصات | 📊 باك تست حي</p>
   <span class="hero-badge">🔥 KUCOIN 4x - 5x</span>
-  <span class="hero-badge">📡 @WHYNOTBLY7</span>
+  <span class="hero-badge">📡 @WHYNOTBLY7 | 🎛️ كل ميزة بايقونة | 🌐 كل منصة بايقونة</span>
   <span class="hero-badge">⚡ LIVE</span>
 </div>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("### ⚙️ لوحة التحكم")
+    st.markdown("### 🎛️ لوحة التحكم - اختار مزاياك")
     st.markdown("---")
-    min_score = st.slider("🎯 اقل سكور - خليه 70 للجامد بس", 0, 100, 70)
+    st.markdown("#### 🌐 اختار المنصة - كل منصة بايقونة")
+    plat_kucoin = st.checkbox("🔥 KUCOIN", value=True)
+    plat_binance = st.checkbox("💛 BINANCE", value=True)
+    plat_gate = st.checkbox("🟦 GATE - تأكيد بس", value=True)
+    plat_bitget = st.checkbox("🟪 BITGET - تأكيد بس", value=True)
+    plat_bybit = st.checkbox("🟧 BYBIT - تأكيد بس", value=True)
+    plat_dex = st.checkbox("🚀 DEX", value=True)
+    st.markdown("---")
+    st.markdown("#### 🎯 نوع الصفقة")
+    want_pump = st.checkbox("🚀 PUMP - صعود", value=True)
+    want_dump = st.checkbox("📉 DUMP - انهيار", value=True)
+    st.markdown("---")
+    st.markdown("#### 🧠 اختار المزايا اللي عايزها في الصفقة")
+    f_fvg = st.checkbox("📦 FVG + Order Block", value=True)
+    f_trap = st.checkbox("🐋 مصيدة - Liquidation Hunt", value=True)
+    f_killzone = st.checkbox("⏰ كيل زون - London / NY", value=True)
+    f_funding = st.checkbox("💸 فخ الفاندنج", value=False)
+    f_wall = st.checkbox("🧱 جدار الحيتان", value=False)
+    f_btc = st.checkbox("🔗 فلتر البيتكوين", value=True)
+    f_cascade = st.checkbox("💥 سلسلة التصفية", value=False)
+    f_pos = st.checkbox("🎯 حجم الصفقة", value=True)
+    st.markdown("---")
+    st.markdown("#### 🎚️ التصفية اللي انت عايزها")
+    mode = st.radio("⚖️ وضع الفلتر", ["🛡️ صارم - جامد بس", "😌 قياسي - هادي"], index=0)
+    ai_filter = "صارم" if "صارم" in mode else "قياسي"
+    min_score = st.slider("⭐ اقل سكور", 0, 100, 70 if "صارم" in mode else 40)
     limit_coins = st.slider("🪙 عدد العملات", 20, 200, 80)
-    focus = st.radio("🎯 ركز على", ["🔥 KUCOIN فقط", "🌐 KUCOIN + CEX + DEX"], index=0)
-    ai_filter = st.radio("🧠 فلتر الذكاء", ["قياسي", "صارم", "إيقاف"], index=0)
     send_tg = st.checkbox("📡 ابعت تليجرام", value=True)
     filter_stable = st.checkbox("🛡️ فلتر المستقرة", value=True)
+    st.markdown("---")
+    st.markdown("🟢 متصل | 🧠 يتعلم | 📡 جاهز")
+    # focus للتوافق مع الكود القديم
+    focus = "🌐 KUCOIN + CEX + DEX"
+    # المزايا دي بتتطبق جوه analyze - لو مش عايز ميزة الغيها من هنا وهي مش هتأثر
+    # f_trap / f_killzone / f_funding / f_wall / f_btc / f_cascade / f_pos
 
 STABLES = ["USDCUSDT","BUSDUSDT","TUSDUSDT","USDPUSDT","DAIUSDT","FDUSDUSDT","USDeUSDT","USD1USDT","RLUSDUSDT","XUSDUSDT","EURUSDT","PYUSDUSDT","GUSDUSDT"]
 MEMORY_FILE = "bly7h_memory.json"
@@ -315,6 +344,8 @@ def format_telegram(sig, source):
 
 def make_signal(df, sym, source):
     try:
+        if not want_pump:
+            return None
         last = float(df['close'].iloc[-1])
         prev = float(df['close'].iloc[-2])
         change_1h = (last - prev) / prev * 100 if prev != 0 else 0
@@ -343,6 +374,23 @@ def make_signal(df, sym, source):
         else:
             oi_change = 0
         cvd_score, cvd_reason = calc_cvd(df)
+        # قفل الاتجاه CEX: البامب لازم الشراء اقوى - POL كانت 60% بيع فاترفضت كبامب
+        _gv = 0
+        _rv = 0
+        for _i in range(-10, 0):
+            _cc = float(df['close'].iloc[_i])
+            _oo = float(df['open'].iloc[_i])
+            _vv = float(df['vol'].iloc[_i])
+            if _cc > _oo:
+                _gv += _vv
+            else:
+                _rv += _vv
+        _tt = _gv + _rv
+        _buy = (_gv - _rv) / _tt * 100 if _tt > 0 else 0
+        if _buy < 5:
+            return None
+        if ai_filter == "صارم" and _buy < 20:
+            return None
         if cvd_score < 8 and oi_change < 3:
             return None
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
@@ -364,10 +412,6 @@ def make_signal(df, sym, source):
         total_score = base_score + ai_bonus
         if total_score > 99:
             total_score = 99
-        if ai_filter == "صارم" and total_score < 70:
-            return None
-        if ai_filter == "قياسي" and total_score < 60:
-            return None
         # السكور المطلوب حسب الوضع: صارم 70 / قياسي 40 / السلايدر يزود بس مش ينقص الصارم
         eff_min = max(min_score, need_score) if ai_filter == "صارم" else min_score
         if total_score < eff_min:
@@ -387,6 +431,9 @@ def make_signal(df, sym, source):
         bull_m = fvg_data.get('bull_m')
         bear_m = fvg_data.get('bear_m')
         bear_t = fvg_data.get('bear_t')
+        # make_signal هنا للبامب بس - الدامب له دالة لوحده calc_dump_score
+        if change_1h <= -1:
+            return None
         if change_1h > -1:
             ptype = "PUMP"
             if bull_m is not None:
@@ -510,6 +557,23 @@ def make_kucoin_signal(df, sym):
         if abs(change_1h) > 5:
             return None
         cvd_score, cvd_reason = calc_cvd(df)
+        # قفل الاتجاه للكوكوين: البامب لازم شراء أقوى
+        _green_v2 = 0
+        _red_v2 = 0
+        for _i in range(-10, 0):
+            _c = float(df['close'].iloc[_i])
+            _o = float(df['open'].iloc[_i])
+            _v = float(df['vol'].iloc[_i])
+            if _c > _o:
+                _green_v2 += _v
+            else:
+                _red_v2 += _v
+        _tot2 = _green_v2 + _red_v2
+        _buy_pct2 = (_green_v2 - _red_v2) / _tot2 * 100 if _tot2 > 0 else 0
+        if _buy_pct2 < 5:
+            return None
+        if ai_filter == "صارم" and _buy_pct2 < 20:
+            return None
         if cvd_score < 8:
             return None
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
@@ -584,13 +648,16 @@ def make_kucoin_signal(df, sym):
 
 
 def calc_dump_score(df, sym, source):
+    # لو المستخدم مش عايز دامب - ارجع فورا
+    if not want_dump:
+        return None
     # 📉 دامب احترافي: توزيع + OI + CVD سالب + FVG هابط + Vol احمر
     try:
         last = float(df['close'].iloc[-1])
         prev = float(df['close'].iloc[-2])
         change_1h = (last - prev) / prev * 100 if prev != 0 else 0
-        # الدامب: لازم السعر نازل او ثابت مش طالع جامد
-        if change_1h > 2:
+        # الدامب: لازم السعر نازل او ثابت - لو طالع اكتر من 0.5% دي بامب مش دامب
+        if change_1h > 0.5:
             return None
         # شروط حسب الوضع
         if ai_filter == "صارم":
@@ -625,12 +692,21 @@ def calc_dump_score(df, sym, source):
                 green_vol += v
         total_v = red_vol + green_vol
         sell_pct = (red_vol - green_vol) / total_v * 100 if total_v > 0 else 0
-        # لازم بيع اقوى من شراء
-        if sell_pct < 10 and ai_filter == "صارم":
+        # قفل الاتجاه للدامب: لازم البيع أقوى بفرق واضح - لو الشراء أقوى دي بامب مش دامب
+        if sell_pct < 20:
             return None
-        if sell_pct < 0 and ai_filter == "قياسي":
+        # الصارم: لازم بيع واضح 40%+ - مش اي نزول
+        if ai_filter == "صارم" and sell_pct < 40:
             return None
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
+        # لو فيه FVG صاعد وهابط مع بعض - العملة متذبذبة مش دامب - ارفض
+        if fvg_data.get('bull_m') is not None and fvg_data.get('bear_m') is not None:
+            # قارن المسافة: الاقرب للسعر هو اللي مسيطر
+            _dist_bull = abs(last - fvg_data.get('bull_m'))
+            _dist_bear = abs(last - fvg_data.get('bear_m'))
+            # لو الصاعد اقرب - دي بامب مش دامب
+            if _dist_bull < _dist_bear:
+                return None
         # الصارم لازم FVG هابط
         if ai_filter == "صارم" and not has_fvg:
             return None
