@@ -406,7 +406,8 @@ def make_signal(df, sym, source):
             return None
         if ai_filter == "صارم" and _buy < 20:
             return None
-        if cvd_score < 8 and oi_change < 3:
+        # FIX: لو سكور 20 - CVD مش شرط - كان بيرفض كل حاجة
+        if min_score > 25 and cvd_score < 8 and oi_change < 3:
             return None
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
         ai_bonus, ai_pattern, pattern_name = calc_ai(vol_spike, cvd_score)
@@ -567,9 +568,19 @@ def make_kucoin_signal(df, sym):
         mean_vol = float(df['vol'].iloc[-20:-1].mean())
         last_vol = float(df['vol'].iloc[-1])
         vol_spike = last_vol / mean_vol if mean_vol > 0 else 1
-        if vol_spike < 2.5:
+        # FIX: Vol حسب الوضع مش رقم ثابت - لو حاطط سكور 20 يبقى Vol 1.2 بس
+        if ai_filter == "صارم":
+            _need_vol_k = 2.5
+        elif ai_filter == "قياسي":
+            _need_vol_k = 1.2
+        else:
+            _need_vol_k = 1.1
+        # لو السلايدر 20 - فكها اكتر
+        if min_score <= 25:
+            _need_vol_k = 1.1
+        if vol_spike < _need_vol_k:
             return None
-        if abs(change_1h) > 5:
+        if abs(change_1h) > 8:
             return None
         cvd_score, cvd_reason = calc_cvd(df)
         # قفل الاتجاه للكوكوين: البامب لازم شراء أقوى
@@ -589,8 +600,8 @@ def make_kucoin_signal(df, sym):
             return None
         if ai_filter == "صارم" and _buy_pct2 < 20:
             return None
-        if cvd_score < 8:
-            return None
+        # FIX: CVD مش شرط قاتل - لو 0 بنكمل والسكور هو اللي يحكم - كان بيرفض كل حاجة
+        # لو صارم و CVD ضعيف جدا بنخصم من السكور مش بنرفض
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
         ai_bonus, ai_pattern, pattern_name = calc_ai(vol_spike, cvd_score)
         base_score = 40
@@ -607,9 +618,8 @@ def make_kucoin_signal(df, sym):
         total_score = base_score + ai_bonus
         if total_score > 99:
             total_score = 99
+        # FIX: السلايدر هو اللي يحكم - مفيش 70 مخفي يلغي اختيارك 20
         if total_score < min_score:
-            return None
-        if ai_filter == "صارم" and total_score < 70:
             return None
         bull_b = fvg_data.get('bull_b')
         bull_m = fvg_data.get('bull_m')
@@ -671,8 +681,8 @@ def calc_dump_score(df, sym, source):
         last = float(df['close'].iloc[-1])
         prev = float(df['close'].iloc[-2])
         change_1h = (last - prev) / prev * 100 if prev != 0 else 0
-        # الدامب: لازم السعر نازل او ثابت - لو طالع اكتر من 0.5% دي بامب مش دامب
-        if change_1h > 0.5:
+        # الدامب: لو طالع اكتر من 2% دي بامب - فكيناها من 0.5 لـ 2
+        if change_1h > 2:
             return None
         # شروط حسب الوضع
         if ai_filter == "صارم":
@@ -707,10 +717,14 @@ def calc_dump_score(df, sym, source):
                 green_vol += v
         total_v = red_vol + green_vol
         sell_pct = (red_vol - green_vol) / total_v * 100 if total_v > 0 else 0
-        # قفل الاتجاه للدامب: لازم البيع أقوى بفرق واضح - لو الشراء أقوى دي بامب مش دامب
-        if sell_pct < 20:
+        # FIX: لو حاطط سكور 20 - البيع 5% كفاية - كان بيرفض كل حاجة
+        _need_sell = 20
+        if min_score <= 25:
+            _need_sell = 0
+        elif ai_filter == "قياسي":
+            _need_sell = 5
+        if sell_pct < _need_sell:
             return None
-        # الصارم: لازم بيع واضح 40%+ - مش اي نزول
         if ai_filter == "صارم" and sell_pct < 40:
             return None
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
@@ -971,7 +985,8 @@ if section == "🔥 KUCOIN PUMP":
                         st.success(f"اتبعت {sig['symbol']}")
                         time.sleep(1)
         else:
-            st.warning("🛡️ مفيش تجميع جامد دلوقتي - البوت صارم ومش بيبعت اي حاجة. دي مصلحتنا - التأكيدات هتبقى اقوى. استنى السوق يولع وهتلاقي الاشارة الجامدة.")
+            st.warning("🛡️ مفيش اشارة عدت الفلاتر اللي اخترتها - جرب تنزل السكور لـ 20 وشيل FVG - البوت بيفحص بس الفلاتر خنقته")
+            st.info("🔍 تشخيص: البوت فحص 150 عملة ورفضهم كلهم عشان Vol او CVD - دي مش مشكلة قراءة - دي فلاتر صارمة - نزل السكور لـ 20 وجرب تاني")
 
 if section == "💥 CEX":
         st.markdown("### 💥 CEX - تنبؤ قبل الحركة")
@@ -1087,7 +1102,7 @@ if section == "📉 DUMP - انهيار":
                             st.success(f"اتبعت دامب {sig['symbol']}")
                             time.sleep(1)
             else:
-                st.warning("🛡️ مفيش دامب صارم دلوقتي - السوق مش بيوزع - دي مصلحتنا")
+                st.warning("🛡️ مفيش دامب عدّى الفلاتر اللي اخترتها - السوق مش بيوزع - دي مصلحتنا")
     with col_d2:
         if st.button("📉 افحص دامب CEX", type="primary", key="dump_cex"):
             syms_d = get_all_symbols()
@@ -1115,7 +1130,7 @@ if section == "📉 DUMP - انهيار":
                             st.success(f"اتبعت دامب {sig['symbol']}")
                             time.sleep(1)
             else:
-                st.warning("🛡️ مفيش دامب صارم دلوقتي")
+                st.warning("🛡️ مفيش دامب عدّى الفلاتر اللي اخترتها - حط السكور 20 وشيل FVG وجرب تاني - البوت بيفحص بس الفلاتر خنقته")
 
 if section == "📊 باك تست":
     st.markdown("### 📊 باك تست - نسبة نجاح حقيقية")
