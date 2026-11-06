@@ -1,10 +1,10 @@
 import streamlit as st, pandas as pd, requests, time
 from datetime import datetime
-st.set_page_config(page_title="BLY7H V13", layout="wide", page_icon="💎")
-st.markdown("<h1 style='text-align:center'>💎 BLY7H ULTIMATE</h1><p style='text-align:center'>🧠 ذكاء اصطناعي يتعلم | 🔮 تنبؤ قبل الحركة | ✅ تأكيد 5 منصات | 📊 باك تست حي</p>", unsafe_allow_html=True)
+st.set_page_config(page_title="BLY7H V18", layout="wide", page_icon="💎", initial_sidebar_state="collapsed")
+st.markdown("<h1 style='text-align:center'>💎 BLY7H ULTIMATE V18</h1><p style='text-align:center'>🧠 تحليل حقيقي لكل عملة | 💸 فاندنج حقيقي | 🐋 مصيدة حقيقية</p><p style='text-align:center'>🧠 ذكاء اصطناعي يتعلم | 🔮 تنبؤ قبل الحركة | ✅ تأكيد 5 منصات | 📊 باك تست حي</p>", unsafe_allow_html=True)
 # --- SIDEBAR ---
 with st.sidebar:
-    st.markdown("### 🎛️ التحكم - V13 FULL")
+    st.markdown("### 🎛️ التحكم - V18 REAL - فاندنج حقيقي")
     st.markdown("#### 🌐 المنصة")
     plat_kucoin = st.checkbox("🔥 KUCOIN", value=True)
     plat_binance = st.checkbox("💛 BINANCE", value=True)
@@ -32,7 +32,7 @@ with st.sidebar:
         if ok: st.success("📡 التليجرام شغال ✅ - الرسالة وصلت")
         else: st.error(f"📡 التليجرام مش شغال: {msg}")
     st.markdown("---")
-    st.success("V13 FULL")
+    st.success("V18 REAL - فاندنج حقيقي")
     st.info("جاهز للفحص")
 is_strict = "صارم" in mode
 need_vol = 2.5 if is_strict else 1.1
