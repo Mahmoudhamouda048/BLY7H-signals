@@ -4,8 +4,8 @@ import requests
 from datetime import datetime
 import time, json, os, math
 
-st.set_page_config(page_title="BLY7H ULTIMATE", layout="wide", page_icon="🚀")
-st.title("🚀 BLY7H ULTIMATE - CEX + DEX قبل الحركة")
+st.set_page_config(page_title="BLY7H ULTIMATE - 【entity-KUCOIN¦canonical_name=KUCOIN】", layout="wide", page_icon="🚀")
+st.title("🚀 BLY7H ULTIMATE - تركيز 【entity-KUCOIN¦canonical_name=KUCOIN】 4x 5x")
 
 st.sidebar.header("Settings")
 min_score = st.sidebar.slider("اقل سكور", 0, 100, 55)
@@ -13,6 +13,8 @@ limit_coins = st.sidebar.slider("عدد العملات", 20, 200, 80)
 filter_stable = st.sidebar.checkbox("فلتر المستقرة", value=True)
 send_tg = st.sidebar.checkbox("تليجرام", value=True)
 tg_min = st.sidebar.slider("سكور التليجرام", 20, 95, 70)
+# اختيار التركيز
+focus = st.sidebar.radio("ركز على", ["🔥 【entity-KUCOIN¦canonical_name=KUCOIN】 فقط - 4x 5x", "【entity-KUCOIN¦canonical_name=KUCOIN】 + CEX + DEX"], index=0)
 
 STABLES = ["USDCUSDT","BUSDUSDT","TUSDUSDT","USDPUSDT","DAIUSDT","FDUSDUSDT","USDeUSDT","USD1USDT","RLUSDUSDT","XUSDUSDT","EURUSDT","PYUSDUSDT","GUSDUSDT"]
 
@@ -33,7 +35,7 @@ def send_tg_alert(text):
     except:
         return False
 
-# ========== CEX FUNCTIONS ==========
+# ========== CEX FUNCTIONS - زي ما هي ==========
 def get_oi_change(sym):
     try:
         r = requests.get(f"https://fapi.binance.com/futures/data/openInterestHist?symbol={sym}&period=5m&limit=12", timeout=5)
@@ -133,7 +135,7 @@ def get_all_symbols():
             if filter_stable and x in STABLES:
                 continue
             clean.append(x)
-    return clean[:400], " 【entity-binance¦canonical_name=binance】"
+    return clean[:400], " binance"
 
 def get_klines_binance(sym):
     for base in ["https://data-api.binance.vision", "https://api1.binance.com"]:
@@ -171,10 +173,8 @@ def pump_dump_predictive(df, sym):
         oi_change = get_oi_change(sym)
         cvd_score, cvd_reason = calc_cvd(df)
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
-        
         if vol_spike < 1.5 and abs(oi_change) < 2 and cvd_score < 5:
             return None
-        
         score = 0
         if vol_spike > 2.0 or oi_change > 3 or cvd_score > 8:
             if change_1h > -1:
@@ -191,19 +191,15 @@ def pump_dump_predictive(df, sym):
             vol_reason = f"DUMP حقيقي Vol x{vol_spike:.1f}"
         else:
             return None
-        
         if has_fvg:
             score += 10
         score = min(int(score), 99)
         if score < min_score:
             return None
-        
         bull_b = fvg_data.get('bull_b')
         bull_m = fvg_data.get('bull_m')
-        bear_b = fvg_data.get('bear_b')
         bear_m = fvg_data.get('bear_m')
         bear_t = fvg_data.get('bear_t')
-        
         if ptype == "PUMP":
             best = bull_m if bull_m is not None else last * 0.993
             no_ret = bull_b * 0.985 if bull_b else rec_low * 0.98
@@ -222,7 +218,6 @@ def pump_dump_predictive(df, sym):
             tp2 = last * 0.92
             if stop <= best:
                 stop = best * 1.03
-        
         return {
             'symbol': sym, 'score': score, 'type': ptype, 'price': round(last,6),
             'change_1h': round(change_1h,2), 'vol_spike': round(vol_spike,2),
@@ -234,7 +229,7 @@ def pump_dump_predictive(df, sym):
     except:
         return None
 
-# ========== DEX FUNCTIONS ==========
+# ========== DEX ==========
 def check_dex_pump(token_address):
     url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
     try:
@@ -272,7 +267,7 @@ def check_dex_pump(token_address):
     except:
         return None
 
-# ========== 【entity-KUCOIN¦canonical_name=KUCOIN】 FUNCTIONS - جديد 4x و 5x ==========
+# ========== KUCOIN - التركيز الاساسي ==========
 def get_kucoin_symbols():
     try:
         r = requests.get("https://api.kucoin.com/api/v1/market/allTickers", timeout=15)
@@ -287,7 +282,7 @@ def get_kucoin_symbols():
             usdt.append(d)
         usdt_sorted = sorted(usdt, key=lambda x: float(x.get('volValue') or 0), reverse=True)
         res = []
-        for d in usdt_sorted[:120]:
+        for d in usdt_sorted[:150]:
             res.append(d['symbol'])
         return res
     except:
@@ -312,12 +307,10 @@ def get_kucoin_klines(sym):
         return None
 
 def pump_dump_kucoin(df, sym):
-    # نفس منطق CEX بس من غير OI - لان كوكوين مفيهوش OI API
     try:
         last = float(df['close'].iloc[-1])
         prev = float(df['close'].iloc[-2])
         change_1h = (last - prev)/prev*100 if prev!=0 else 0
-        # تغيير 24 ساعة - لكشف 4x و 5x
         if len(df) >= 24:
             first24 = float(df['close'].iloc[-24])
             change_24 = (last - first24)/first24*100 if first24!=0 else 0
@@ -328,7 +321,6 @@ def pump_dump_kucoin(df, sym):
         vol_spike = last_vol / mean_vol if mean_vol>0 else 1
         cvd_score, cvd_reason = calc_cvd(df)
         has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
-        # كوكوين: لو عمل 100%+ في 24س او Vol انفجر
         is_moon = change_24 > 80 or vol_spike > 3
         if vol_spike < 1.5 and cvd_score < 5 and not is_moon:
             return None
@@ -337,9 +329,9 @@ def pump_dump_kucoin(df, sym):
             if change_1h > -1:
                 score = 40 + cvd_score + min(vol_spike*3, 15)
                 if change_24 > 100:
-                    score += 20  # بونص 4x
+                    score += 20
                 if change_24 > 300:
-                    score += 15  # بونص 5x
+                    score += 15
                 ptype = "PUMP KUCOIN 4x"
                 vol_reason = f"KUCOIN PUMP {change_24:.0f}% 24س Vol x{vol_spike:.1f}"
             else:
@@ -390,87 +382,25 @@ def pump_dump_kucoin(df, sym):
     except:
         return None
 
-# ========== UI TABS ==========
-tab1, tab2, tab3 = st.tabs(["💥 CEX PUMP DUMP (OI + CVD)", "🚀 DEX EARLY (قبل المنصات)", "🔥 KUCOIN 4x 5x"])
+# ========== UI - KUCOIN اول واحد ==========
+if focus == "🔥 KUCOIN فقط - 4x 5x":
+    tab1, = st.tabs(["🔥 KUCOIN 4x 5x - التركيز"])
+    tabs = [tab1]
+else:
+    tab1, tab2, tab3 = st.tabs(["🔥 KUCOIN 4x 5x - التركيز", "💥 CEX", "🚀 DEX"])
+    tabs = [tab1, tab2, tab3]
 
-with tab1:
-    st.subheader("CEX - تنبؤ قبل الحركة OI + CVD + Vol")
-    if st.button("💥 افحص CEX", type="primary", key="cex"):
-        st.cache_data.clear()
-        st.rerun()
-    
-    symbols, src = get_all_symbols()
-    st.write(f"تم جلب {len(symbols)} عملة - هيفحص اول {limit_coins}")
-    to_scan = symbols[:limit_coins]
-    results = []
-    prog = st.progress(0)
-    stat = st.empty()
-    for i, sym in enumerate(to_scan):
-        prog.progress((i+1)/len(to_scan))
-        stat.text(f"CEX: {sym} {i+1}/{len(to_scan)}")
-        df = get_klines(sym)
-        if df is not None:
-            res = pump_dump_predictive(df, sym)
-            if res:
-                results.append(res)
-        time.sleep(0.05)
-    prog.empty()
-    stat.empty()
-    
-    if results:
-        df_res = pd.DataFrame(results).sort_values('score', ascending=False)
-        st.success(f"💥 {len(df_res)} تنبؤ CEX")
-        st.dataframe(df_res, use_container_width=True)
-        if send_tg:
-            sent = 0
-            for sig in df_res.head(5).to_dict('records'):
-                txt = f"🚀 BLY7H {sig['type']} {sig['symbol']} قبل الحركة!\nسكور {sig['score']} Vol x{sig['vol_spike']} OI {sig['oi_change']}%\nسعر {sig['price']} دخول {sig['best_entry']} ستوب {sig['stop_loss']} هدف {sig['TP1']}"
-                if send_tg_alert(txt):
-                    sent += 1
-                    time.sleep(1)
-            if sent > 0:
-                st.success(f"اتبعت {sent} للتليجرام!")
-
-with tab2:
-    st.subheader("DEX - قبل ما توصل المنصات المركزية")
-    st.write("يفحص BSC التريند - Vol x2.5 + 5د + سيولة")
-    if st.button("🚀 افحص DEX", type="primary", key="dex"):
-        with st.spinner("يفحص DEX..."):
-            try:
-                url = "https://api.dexscreener.com/latest/dex/search/?q=BSC"
-                r = requests.get(url, timeout=15)
-                pairs = r.json().get('pairs', [])[:20]
-                seen = set()
-                found = 0
-                for p in pairs:
-                    addr = p.get('baseToken',{}).get('address')
-                    if not addr or addr in seen:
-                        continue
-                    seen.add(addr)
-                    result = check_dex_pump(addr)
-                    if result:
-                        msg, score, sym = result
-                        st.code(msg)
-                        if send_tg and send_tg_alert(msg):
-                            st.success(f"اتبعت {sym} سكور {score}")
-                            found += 1
-                        time.sleep(1)
-                if found == 0:
-                    st.warning("مفيش بمب DEX قوي")
-            except Exception as e:
-                st.error(f"خطأ: {e}")
-
-with tab3:
-    st.subheader("🔥 KUCOIN - عملات 4x و 5x في اليوم")
-    st.write("كوكوين فيها عملات صغيرة بتعمل 400% - 500% - نفس ادوات CEX بس من غير OI")
-    if st.button("🔥 افحص KUCOIN", type="primary", key="kucoin"):
+with tabs[0]:
+    st.subheader("🔥 KUCOIN - عملات 4x و 5x - التركيز الاساسي")
+    st.write("البوت دلوقتي بيركز على كوكوين - عملات صغيرة بتعمل 400% في اليوم")
+    if st.button("🔥 افحص KUCOIN", type="primary", key="kucoin_main"):
         ksyms = get_kucoin_symbols()
         st.write(f"تم جلب {len(ksyms)} عملة كوكوين - هيفحص اول {limit_coins}")
         kresults = []
         prog2 = st.progress(0)
         stat2 = st.empty()
         for i, sym in enumerate(ksyms[:limit_coins]):
-            prog2.progress((i+1)/min(len(ksyms[:limit_coins]), limit_coins))
+            prog2.progress((i+1)/len(ksyms[:limit_coins]))
             stat2.text(f"【entity-KUCOIN¦canonical_name=KUCOIN】: {sym} {i+1}/{len(ksyms[:limit_coins])}")
             dfk = get_kucoin_klines(sym)
             if dfk is not None:
@@ -495,3 +425,68 @@ with tab3:
                     st.success(f"اتبعت {sent} للتليجرام!")
         else:
             st.warning("مفيش 4x دلوقتي على كوكوين")
+
+if focus != "🔥 KUCOIN فقط - 4x 5x":
+    with tabs[1]:
+        st.subheader("CEX - Binance")
+        if st.button("💥 افحص CEX", type="primary", key="cex"):
+            st.cache_data.clear()
+            st.rerun()
+        symbols, src = get_all_symbols()
+        st.write(f"تم جلب {len(symbols)} عملة - هيفحص اول {limit_coins}")
+        to_scan = symbols[:limit_coins]
+        results = []
+        prog = st.progress(0)
+        stat = st.empty()
+        for i, sym in enumerate(to_scan):
+            prog.progress((i+1)/len(to_scan))
+            stat.text(f"CEX: {sym} {i+1}/{len(to_scan)}")
+            df = get_klines(sym)
+            if df is not None:
+                res = pump_dump_predictive(df, sym)
+                if res:
+                    results.append(res)
+            time.sleep(0.05)
+        prog.empty()
+        stat.empty()
+        if results:
+            df_res = pd.DataFrame(results).sort_values('score', ascending=False)
+            st.success(f"💥 {len(df_res)} تنبؤ CEX")
+            st.dataframe(df_res, use_container_width=True)
+            if send_tg:
+                sent = 0
+                for sig in df_res.head(5).to_dict('records'):
+                    txt = f"🚀 BLY7H {sig['type']} {sig['symbol']} قبل الحركة!\nسكور {sig['score']} Vol x{sig['vol_spike']} OI {sig['oi_change']}%\nسعر {sig['price']} دخول {sig['best_entry']} ستوب {sig['stop_loss']} هدف {sig['TP1']}"
+                    if send_tg_alert(txt):
+                        sent += 1
+                        time.sleep(1)
+                if sent > 0:
+                    st.success(f"اتبعت {sent} للتليجرام!")
+
+    with tabs[2]:
+        st.subheader("DEX - قبل المنصات")
+        if st.button("🚀 افحص DEX", type="primary", key="dex"):
+            with st.spinner("يفحص DEX..."):
+                try:
+                    url = "https://api.dexscreener.com/latest/dex/search/?q=BSC"
+                    r = requests.get(url, timeout=15)
+                    pairs = r.json().get('pairs', [])[:20]
+                    seen = set()
+                    found = 0
+                    for p in pairs:
+                        addr = p.get('baseToken',{}).get('address')
+                        if not addr or addr in seen:
+                            continue
+                        seen.add(addr)
+                        result = check_dex_pump(addr)
+                        if result:
+                            msg, score, sym = result
+                            st.code(msg)
+                            if send_tg and send_tg_alert(msg):
+                                st.success(f"اتبعت {sym} سكور {score}")
+                                found += 1
+                            time.sleep(1)
+                    if found == 0:
+                        st.warning("مفيش بمب DEX قوي")
+                except Exception as e:
+                    st.error(f"خطأ: {e}")
