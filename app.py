@@ -159,15 +159,18 @@ def calc_smc(df, price):
         bear_b = None
         bear_m = None
         bear_t = None
-        for i in range(1, len(df)-1):
+        # FIX: FVG لازم يكون حديث - اخر 20 شمعة بس - مش من اول الشارت
+        start_i = max(1, len(df)-20)
+        for i in range(start_i, len(df)-1):
             low_next = float(df['low'].iloc[i+1])
             high_prev = float(df['high'].iloc[i-1])
             high_next = float(df['high'].iloc[i+1])
             low_prev = float(df['low'].iloc[i-1])
-            if low_next > high_prev and bull_b is None:
+            # ناخد احدث FVG - نحدث كل مرة مش اول واحد
+            if low_next > high_prev:
                 bull_b = high_prev
                 bull_m = (high_prev + low_next) / 2
-            if high_next < low_prev and bear_b is None:
+            if high_next < low_prev:
                 bear_b = high_next
                 bear_t = low_prev
                 bear_m = (high_next + low_prev) / 2
@@ -183,6 +186,18 @@ def calc_smc(df, price):
         return has_fvg, fvg_data, recent_low, recent_high
     except:
         return False, {}, price*0.99, price*1.01
+
+def clamp_entry(entry, price, is_pump):
+    # الدخول لازم يكون قريب - max 1.5% - لو FVG بعيد نرجع للسعر
+    if price == 0:
+        return entry
+    dist = abs(entry - price) / price * 100
+    if dist > 1.5:
+        if is_pump:
+            return price * 0.993
+        else:
+            return price * 1.007
+    return entry
 
 def calc_ai(vol_spike, cvd_score):
     # حساب بسيط ومضمون - مفيش سطور طويلة
@@ -437,11 +452,11 @@ def make_signal(df, sym, source):
         if change_1h > -1:
             ptype = "PUMP"
             if bull_m is not None:
-                best = bull_m
+                best = clamp_entry(bull_m, last, True)
             else:
                 best = last * 0.993
             if bull_b is not None:
-                no_ret = bull_b * 0.985
+                no_ret = clamp_entry(bull_b * 0.985, last, True)
             else:
                 no_ret = rec_low * 0.98
             if best > last * 0.998:
@@ -454,11 +469,11 @@ def make_signal(df, sym, source):
         else:
             ptype = "DUMP"
             if bear_m is not None:
-                best = bear_m
+                best = clamp_entry(bear_m, last, False)
             else:
                 best = last * 1.007
             if bear_t is not None:
-                no_ret = bear_t * 1.015
+                no_ret = clamp_entry(bear_t * 1.015, last, False)
             else:
                 no_ret = rec_high * 1.02
             if best < last * 1.002:
@@ -599,11 +614,11 @@ def make_kucoin_signal(df, sym):
         bull_b = fvg_data.get('bull_b')
         bull_m = fvg_data.get('bull_m')
         if bull_m is not None:
-            best = bull_m
+            best = clamp_entry(bull_m, last, True)
         else:
             best = last * 0.993
         if bull_b is not None:
-            no_ret = bull_b * 0.985
+            no_ret = clamp_entry(bull_b * 0.985, last, True)
         else:
             no_ret = rec_low * 0.98
         if best > last * 0.998:
@@ -750,11 +765,11 @@ def calc_dump_score(df, sym, source):
         bear_m = fvg_data.get('bear_m')
         bear_t = fvg_data.get('bear_t')
         if bear_m is not None:
-            best = bear_m
+            best = clamp_entry(bear_m, last, False)
         else:
             best = last * 1.007
         if bear_t is not None:
-            no_ret = bear_t * 1.015
+            no_ret = clamp_entry(bear_t * 1.015, last, False)
         else:
             no_ret = rec_high * 1.02
         if best < last * 1.002:
@@ -911,14 +926,11 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-if focus == "🔥 KUCOIN فقط":
-    tab1, tab_dump, tab4, tab5 = st.tabs(["🔥 KUCOIN PUMP", "📉 DUMP - انهيار", "📊 باك تست", "🧠 ذاكرة التعلم"])
-    tabs = [tab1, None, None, tab4, tab5]
-    tab_dump_obj = tab_dump
-else:
-    tab1, tab2, tab3, tab_dump, tab4, tab5 = st.tabs(["🔥 KUCOIN PUMP", "💥 CEX", "🚀 DEX", "📉 DUMP - انهيار", "📊 باك تست", "🧠 ذاكرة التعلم"])
-    tabs = [tab1, tab2, tab3, tab4, tab5]
-    tab_dump_obj = tab_dump
+# FIX: كل الاقسام شغالة على طول - مش مربوطة باختيار السايد بار
+# السبب اللي كان بيخلي باقي الاقسام مش شغالة: لو اخترت KUCOIN فقط كان بيخفي CEX و DEX وبيحط None مكانهم
+tab1, tab2, tab3, tab_dump, tab4, tab5 = st.tabs(["🔥 KUCOIN PUMP", "💥 CEX", "🚀 DEX", "📉 DUMP - انهيار", "📊 باك تست", "🧠 ذاكرة التعلم"])
+tabs = [tab1, tab2, tab3, tab4, tab5]
+tab_dump_obj = tab_dump
 
 with tabs[0]:
     st.markdown("### 🔥 KUCOIN - تجميع قبل البمب")
