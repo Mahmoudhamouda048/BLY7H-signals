@@ -99,7 +99,18 @@ def send_all_tg(signals):
     else: st.error(f"📡 التليجرام مش بيبعت: {last_err}")
     return sent
 def format_tg(s):
-    return f"{'🚀 PUMP' if s['type']=='PUMP' else '📉 DUMP'} {s['symbol']}\n⭐ سكور {s['score']} | سعر {s['price']} | Vol x{s['vol']}\n🎯 دخول {s['entry']} | ⛔ ستوب {s['stop']} | ✅ {s['tp1']} | 🏆 {s['tp2']}\n{s.get('extra','')}\n@WHYNOTBLY7"
+    head = f"{'🚀 PUMP' if s['type']=='PUMP' else '📉 DUMP'} {s['symbol']}"
+    body = f"{head}\n"
+    body += f"⭐ سكور: {s['score']} | 💵 سعر: {s['price']} | 📦 Vol: x{s['vol']} | 📈 تغير 1س: {s['ch']}%\n"
+    body += f"🎯 دخول: {s['entry']}\n"
+    body += f"❌ إلغاء: {s.get('no_return_point', s['entry'])}\n" if 'no_return_point' in s else ""
+    body += f"⛔ ستوب: {s['stop']}\n"
+    body += f"✅ هدف1: {s['tp1']}\n"
+    body += f"🏆 هدف2: {s['tp2']}\n"
+    body += f"--- التحليل ---\n"
+    body += f"{s.get('extra','')}\n"
+    body += f"@WHYNOTBLY7"
+    return body
 def load_mem():
     import os, json
     try:
@@ -125,6 +136,82 @@ def calc_fvg(df):
         if ln>hp: bull_b=hp; bull_m=(hp+ln)/2
         if hn<lp: bear_b=hn; bear_m=(hn+lp)/2
     return bull_b,bull_m,bear_b,bear_m
+
+def get_wall_real(sym):
+    # جدار حقيقي من الاوردر بوك - مش "راقب الاوردر بوك"
+    try:
+        b = sym.replace('-USDT','USDT').replace('USDT','')
+        # بينانس اوردر بوك
+        r = requests.get(f"https://data-api.binance.vision/api/v3/depth?symbol={b}USDT&limit=20", timeout=5)
+        if r.status_code==200:
+            d=r.json(); bids=d.get('bids',[]); asks=d.get('asks',[])
+            if bids and asks:
+                max_bid = max(float(q) for _,q in bids); max_ask = max(float(q) for _,q in asks)
+                bid_price = float(bids[0][0]); ask_price = float(asks[0][0])
+                # الجدار الاكبر: فوق ولا تحت؟
+                if max_ask > max_bid*1.5:
+                    return f"جدار بيع {max_ask:,.0f} عند {ask_price} - السعر هيترد منه"
+                elif max_bid > max_ask*1.5:
+                    return f"جدار شراء {max_bid:,.0f} عند {bid_price} - السعر هيترفع منه"
+                else:
+                    return f"مفيش جدار واضح - اكبر بيع {max_ask:,.0f} / اكبر شراء {max_bid:,.0f}"
+    except: pass
+    return "اوردر بوك غير متاح"
+def get_funding_real(sym):
+    # فاندنج حقيقي - لو العملة كوكوين نحولها - لو فشل نرجع None مش 0.000
+    try:
+        b = sym.replace('-USDT','').replace('USDT','')
+        r = requests.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={b}USDT", timeout=5)
+        if r.status_code==200:
+            f = float(r.json().get('lastFundingRate', 0))*100
+            return f
+    except: pass
+    return None
+def get_oi_real(sym):
+    try:
+        b = sym.replace('-USDT','').replace('USDT','')
+        r = requests.get(f"https://fapi.binance.com/futures/data/openInterestHist?symbol={b}USDT&period=5m&limit=12", timeout=5)
+        if r.status_code==200:
+            d=r.json()
+            if len(d)>=2:
+                first=float(d[0]['sumOpenInterest']); last=float(d[-1]['sumOpenInterest'])
+                if first>0: return (last-first)/first*100, last
+    except: pass
+    return 0, 0
+def calc_trap_real(df, last, typ, bm, em, bb, eb, buy):
+    # مصيدة حقيقية: لازم دليل من الشارت مش كلام ثابت
+    try:
+        # ذيل طويل؟ السعر عمل ويك وضرب ستوبات ورجع؟
+        last_low=float(df['low'].iloc[-1]); last_high=float(df['high'].iloc[-1])
+        last_open=float(df['open'].iloc[-1]); last_close=float(df['close'].iloc[-1])
+        body=abs(last_close-last_open); wick_up=last_high-max(last_open,last_close); wick_dn=min(last_open,last_close)-last_low
+        if typ=="DUMP":
+            # دامب: بيع قوي + ذيل فوقي طويل = ضرب ستوبات فوق وبعدين نزل
+            if wick_up > body*1.5:
+                return f"مصيدة: ويك فوقي {wick_up/last*100:.2f}% - ضرب ستوبات الشورت ورجع ينزل"
+            if buy < -30:
+                return f"مصيدة: توزيع بيع {abs(buy):.0f}% - الحيتان بتوزع عند القمة"
+            return f"مصيدة: بيع {abs(buy):.0f}% - ضغط بيع مستمر"
+        else:
+            if wick_dn > body*1.5:
+                return f"مصيدة: ويك تحتي {wick_dn/last*100:.2f}% - ضرب ستوبات اللونج ورجع يطلع"
+            if buy > 30:
+                return f"مصيدة: تجميع شراء {buy:.0f}% - الحيتان بتجمع عند القاع"
+            return f"مصيدة: شراء {buy:.0f}% - ضغط شراء مستمر"
+    except: return "مصيدة: غير محسوب"
+def calc_cascade_real(sym, last, oi_ch, typ):
+    # سلسلة تصفية: نحسبها من OI الحقيقي - لو OI طالع والسعر عكس = تصفية قادمة
+    try:
+        if oi_ch is None: oi_ch=0
+        if typ=="DUMP" and oi_ch > 3:
+            return f"سلسلة تصفية: OI +{oi_ch:.1f}% والسعر بينزل - لونجات هتتصفى لو نزل 2%"
+        if typ=="PUMP" and oi_ch < -3:
+            return f"سلسلة تصفية: OI {oi_ch:.1f}% والسعر بيطلع - شورتات هتتصفى لو طلع 2%"
+        if abs(oi_ch) < 1:
+            return f"سلسلة تصفية: OI {oi_ch:+.1f}% - مفيش خطر تصفية قريب"
+        return f"سلسلة تصفية: OI {oi_ch:+.1f}%"
+    except: return "سلسلة تصفية: غير محسوب"
+
 def analyze(df, sym):
     try:
         last=float(df['close'].iloc[-1]); prev=float(df['close'].iloc[-2])
@@ -169,15 +256,50 @@ def analyze(df, sym):
             entry=clamp_entry(em,last,False) if em is not None else last*1.007
             stop=last*1.02; tp1=last*0.96; tp2=last*0.92; typ="DUMP"
         funding = funding2
-        extra=""
-        if f_trap: extra+=f"🐋 مصيدة: {'السعر رايح يملا FVG' if typ=='PUMP' else 'توزيع بيع - انهيار قادم'} | "
-        if f_killzone: extra+=f"⏰ كيل زون: {kz_txt} | "
-        if f_funding: extra+=f"💸 فاندنج {funding:.3f}% | "
-        if f_wall: extra+="🧱 راقب الاوردر بوك | "
-        if f_cascade and typ=='DUMP': extra+="💥 سلسلة تصفية محتملة لو نزل 2% | "
-        if f_pos: extra+=f"🎯 حجم: {'2%' if score>=90 else '1%' if score>=75 else '0.5%'} من راس مالك | "
+        # === كل سطر برقم حقيقي من العملة نفسها - مش قالب ثابت ===
+        lines = []
+        # اوردر بلوك: ارقام حقيقية
+        if f_fvg:
+            if typ=="PUMP" and bb is not None:
+                lines.append(f"📦 أوردر بلوك: {bb:.6f} - FVG: {bm:.6f} - المسافة من السعر {abs(bm-last)/last*100:.2f}%")
+            elif typ=="DUMP" and eb is not None:
+                lines.append(f"📦 أوردر بلوك: {eb:.6f} - FVG هابط: {em:.6f} - المسافة {abs(em-last)/last*100:.2f}%")
+            else:
+                lines.append(f"📦 أوردر بلوك: لا يوجد FVG حديث - الدخول من السعر {last:.6f}")
+        # مصيدة حقيقية
+        if f_trap:
+            lines.append(f"🐋 مصيدة: {calc_trap_real(df, last, typ, bm, em, bb, eb, buy)}")
+        # كيل زون: وقت حقيقي + هل احنا جواه ولا بره
+        if f_killzone:
+            if in_kz:
+                lines.append(f"⏰ كيل زون: {kz_txt} - إشارة في وقت السيولة")
+            else:
+                lines.append(f"⏰ كيل زون: خارج الكيل زون ({kz_txt}) - سيولة أقل")
+        # فاندنج حقيقي - لو مش متاح نقول مش متاح مش 0.000
+        if f_funding:
+            fr = get_funding_real(sym)
+            if fr is None:
+                lines.append(f"💸 فاندنج: غير متاح لـ {sym} - بدون فيوتشر")
+            else:
+                interp = "الكل لونج - خطر دامب" if fr>0.05 else "الكل شورت - فرصة بامب" if fr<-0.05 else "متوازن"
+                lines.append(f"💸 فاندنج: {fr:+.4f}% - {interp}")
+        # جدار حقيقي من الاوردر بوك
+        if f_wall:
+            lines.append(f"🧱 جدار: {get_wall_real(sym)}")
+        # سلسلة تصفية حقيقية من OI
+        oi_ch, oi_val = get_oi_real(sym)
+        if f_cascade:
+            lines.append(f"💥 {calc_cascade_real(sym, last, oi_ch, typ)}")
+        # حجم صفقة حقيقي: حسب السكور والمسافة للستوب
+        if f_pos:
+            risk_pct = abs(stop-last)/last*100 if last!=0 else 2
+            lines.append(f"🎯 حجم: {'2%' if score>=90 else '1%' if score>=75 else '0.5%'} من رأس المال - مخاطرة الصفقة {risk_pct:.2f}%")
+        # تأكيد 5 منصات حقيقي
         if f_confirm5:
-            _cc,_lead=check_5ex(sym); extra+=f"✅ تأكيد {_cc} منصات - القائد {_lead} | "; score=min(95,score+5) if _cc>=3 else score
+            _cc,_lead=check_5ex(sym); lines.append(f"✅ تأكيد: {_cc} منصات - القائد {_lead}"); score=min(95,score+5) if _cc>=3 else score
+        # OI سطر مستقل
+        lines.append(f"📊 OI: {oi_ch:+.1f}% - CVD: {buy:+.1f}%")
+        extra = "\n".join(lines)
         d={"symbol":sym,"score":score,"type":typ,"price":round(last,6),"ch":round(ch,2),"vol":round(vs,2),"buy":round(buy,1),"entry":round(entry,6),"stop":round(stop,6),"tp1":round(tp1,6),"tp2":round(tp2,6),"extra":extra}
         return d, "OK"
     except Exception as e:
