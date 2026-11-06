@@ -60,7 +60,7 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### ⚙️ لوحة التحكم")
     st.markdown("---")
-    min_score = st.slider("🎯 اقل سكور", 0, 100, 55)
+    min_score = st.slider("🎯 اقل سكور - خليه 70 للجامد بس", 0, 100, 70)
     limit_coins = st.slider("🪙 عدد العملات", 20, 200, 80)
     focus = st.radio("🎯 ركز على", ["🔥 KUCOIN فقط", "🌐 KUCOIN + CEX + DEX"], index=0)
     ai_filter = st.radio("🧠 فلتر الذكاء", ["قياسي", "صارم", "إيقاف"], index=0)
@@ -320,10 +320,23 @@ def make_signal(df, sym, source):
         change_1h = (last - prev) / prev * 100 if prev != 0 else 0
         if abs(change_1h) > 5:
             return None
+        # القياسي هادي / الصارم صارم بجد
+        if ai_filter == "صارم":
+            need_vol = 2.5
+            need_cvd = 8
+            need_score = 70
+        elif ai_filter == "قياسي":
+            need_vol = 1.4
+            need_cvd = 0
+            need_score = 40
+        else:
+            need_vol = 1.2
+            need_cvd = 0
+            need_score = 20
         mean_vol = float(df['vol'].iloc[-20:-1].mean())
         last_vol = float(df['vol'].iloc[-1])
         vol_spike = last_vol / mean_vol if mean_vol > 0 else 1
-        if vol_spike < 2.0:
+        if vol_spike < need_vol:
             return None
         if source == "CEX":
             oi_change = get_oi_change(sym)
@@ -355,7 +368,9 @@ def make_signal(df, sym, source):
             return None
         if ai_filter == "قياسي" and total_score < 60:
             return None
-        if total_score < min_score:
+        # السكور المطلوب حسب الوضع: صارم 70 / قياسي 40 / السلايدر يزود بس مش ينقص الصارم
+        eff_min = max(min_score, need_score) if ai_filter == "صارم" else min_score
+        if total_score < eff_min:
             return None
         confirm_count, leader = check_5_exchanges(sym)
         if confirm_count >= 3:
@@ -566,6 +581,169 @@ def make_kucoin_signal(df, sym):
     except:
         return None
 
+
+
+def calc_dump_score(df, sym, source):
+    # 📉 دامب احترافي: توزيع + OI + CVD سالب + FVG هابط + Vol احمر
+    try:
+        last = float(df['close'].iloc[-1])
+        prev = float(df['close'].iloc[-2])
+        change_1h = (last - prev) / prev * 100 if prev != 0 else 0
+        # الدامب: لازم السعر نازل او ثابت مش طالع جامد
+        if change_1h > 2:
+            return None
+        # شروط حسب الوضع
+        if ai_filter == "صارم":
+            need_vol = 2.5
+            need_score = 70
+            need_cvd_abs = 8
+        elif ai_filter == "قياسي":
+            need_vol = 1.4
+            need_score = 40
+            need_cvd_abs = 0
+        else:
+            need_vol = 1.2
+            need_score = 20
+            need_cvd_abs = 0
+        mean_vol = float(df['vol'].iloc[-20:-1].mean())
+        last_vol = float(df['vol'].iloc[-1])
+        vol_spike = last_vol / mean_vol if mean_vol > 0 else 1
+        if vol_spike < need_vol:
+            return None
+        # CVD: لازم بيع - الشمعة الاخيرة حمرا والـ Vol احمر اكتر
+        cvd_score, cvd_reason = calc_cvd(df)
+        # calc_cvd بيرجع + للشراء و - للبيع؟ عندنا بيرجع قيمة موجبة دايما - نفحص اتجاه الشموع
+        red_vol = 0
+        green_vol = 0
+        for i in range(-10, 0):
+            c = float(df['close'].iloc[i])
+            o = float(df['open'].iloc[i])
+            v = float(df['vol'].iloc[i])
+            if c < o:
+                red_vol += v
+            else:
+                green_vol += v
+        total_v = red_vol + green_vol
+        sell_pct = (red_vol - green_vol) / total_v * 100 if total_v > 0 else 0
+        # لازم بيع اقوى من شراء
+        if sell_pct < 10 and ai_filter == "صارم":
+            return None
+        if sell_pct < 0 and ai_filter == "قياسي":
+            return None
+        has_fvg, fvg_data, rec_low, rec_high = calc_smc(df, last)
+        # الصارم لازم FVG هابط
+        if ai_filter == "صارم" and not has_fvg:
+            return None
+        if ai_filter == "صارم" and fvg_data.get('bear_m') is None:
+            return None
+        # OI: لو السعر ثابت والـ OI طالع = توزيع
+        if source == "CEX":
+            oi_change = get_oi_change(sym)
+        else:
+            oi_change = 0
+        # حساب السكور على سطور منفصلة
+        base_score = 40
+        if sell_pct > 30:
+            base_score = base_score + 15
+        elif sell_pct > 15:
+            base_score = base_score + 8
+        add_vol = vol_spike * 3
+        if add_vol > 15:
+            add_vol = 15
+        base_score = base_score + add_vol
+        if has_fvg:
+            base_score = base_score + 10
+        if oi_change > 3:
+            base_score = base_score + 10
+        if base_score > 80:
+            base_score = 80
+        base_score = int(base_score)
+        ai_bonus, ai_pattern, pattern_name = calc_ai(vol_spike, cvd_score)
+        total_score = base_score + ai_bonus
+        if total_score > 99:
+            total_score = 99
+        eff_min = max(min_score, need_score) if ai_filter == "صارم" else min_score
+        if total_score < eff_min:
+            return None
+        confirm_count, leader = check_5_exchanges(sym)
+        if confirm_count >= 3:
+            total_score = total_score + 5
+            if total_score > 99:
+                total_score = 99
+        # مستويات الدامب: دخول فوق السعر - استنى صعود للـ FVG الهابط
+        bear_m = fvg_data.get('bear_m')
+        bear_t = fvg_data.get('bear_t')
+        if bear_m is not None:
+            best = bear_m
+        else:
+            best = last * 1.007
+        if bear_t is not None:
+            no_ret = bear_t * 1.015
+        else:
+            no_ret = rec_high * 1.02
+        if best < last * 1.002:
+            best = last * 1.002
+        stop = no_ret * 1.01
+        tp1 = last * 0.96
+        tp2 = last * 0.92
+        if stop <= best:
+            stop = best * 1.03
+        risk = abs(stop - last) / last * 100 if last != 0 else 1
+        reward = abs(tp1 - last) / last * 100 if last != 0 else 1
+        rr_val = reward / risk if risk > 0 else 0
+        rr_txt = f"1:{rr_val:.1f}"
+        out = {}
+        out['symbol'] = sym
+        out['score'] = total_score
+        out['base_score'] = base_score
+        out['ai_bonus'] = ai_bonus
+        out['ai_pattern'] = f"توزيع {sell_pct:.0f}% بيع | {ai_pattern}"
+        out['type'] = "DUMP"
+        out['price'] = round(last, 6)
+        out['change_1h'] = round(change_1h, 2)
+        out['vol_spike'] = round(vol_spike, 2)
+        out['oi_change'] = round(oi_change, 2)
+        out['best_entry'] = round(best, 6)
+        out['no_return_point'] = round(no_ret, 6)
+        out['stop_loss'] = round(stop, 6)
+        out['TP1'] = round(tp1, 6)
+        out['TP2'] = round(tp2, 6)
+        out['cvd_reason'] = f"بيع {sell_pct:.0f}%"
+        out['confidence'] = total_score
+        out['phase'] = "توزيع - انهيار قادم"
+        out['rr'] = rr_txt
+        out['confirm'] = f"{confirm_count} منصة"
+        out['leader'] = leader
+        out['has_fvg'] = has_fvg
+        return out
+    except:
+        return None
+
+def format_telegram_dump(sig, source):
+    now = datetime.now().strftime("%H:%M:%S %d-%m-%Y")
+    msg = ""
+    msg += "📉 BLY7H DUMP ALERT - انهيار قادم 📉\n\n"
+    msg += f"💰 {sig['symbol']} - DOWN\n"
+    msg += f"📊 سكور: {sig['score']} (base {sig['base_score']} + AI {sig['ai_bonus']})\n"
+    msg += f"💵 السعر: {sig['price']}\n"
+    msg += f"📈 تغير 1س: {sig['change_1h']}%\n"
+    msg += f"📦 فوليوم احمر x{sig['vol_spike']} - توزيع\n\n"
+    msg += f"🎯 دخول (استنى صعود): {sig['best_entry']}\n"
+    msg += f"❌ الغاء: {sig['no_return_point']}\n"
+    msg += f"⛔ ستوب: {sig['stop_loss']}\n"
+    msg += f"✅ هدف1: {sig['TP1']}\n"
+    msg += f"✅ هدف2: {sig['TP2']}\n\n"
+    msg += "💡 لماذا دامب؟\n"
+    msg += f"- {sig['ai_pattern']}\n"
+    msg += f"- مرحلة السوق: {sig['phase']}\n"
+    msg += f"- تأكيد: {sig['confirm']}، القائد {sig['leader']}\n"
+    msg += f"- نسبة المخاطرة/العائد {sig['rr']}\n"
+    msg += f"- FVG هابط: {'نعم' if sig['has_fvg'] else 'لا'}\n\n"
+    msg += f"⏰ {now}\n"
+    msg += "@WHYNOTBLY7"
+    return msg
+
+
 def run_backtest(sym, df):
     wins = 0
     total = 0
@@ -658,15 +836,18 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 if focus == "🔥 KUCOIN فقط":
-    tab1, tab4, tab5 = st.tabs(["🔥 KUCOIN", "📊 باك تست", "🧠 ذاكرة التعلم"])
+    tab1, tab_dump, tab4, tab5 = st.tabs(["🔥 KUCOIN PUMP", "📉 DUMP - انهيار", "📊 باك تست", "🧠 ذاكرة التعلم"])
     tabs = [tab1, None, None, tab4, tab5]
+    tab_dump_obj = tab_dump
 else:
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔥 KUCOIN", "💥 CEX", "🚀 DEX", "📊 باك تست", "🧠 ذاكرة التعلم"])
+    tab1, tab2, tab3, tab_dump, tab4, tab5 = st.tabs(["🔥 KUCOIN PUMP", "💥 CEX", "🚀 DEX", "📉 DUMP - انهيار", "📊 باك تست", "🧠 ذاكرة التعلم"])
     tabs = [tab1, tab2, tab3, tab4, tab5]
+    tab_dump_obj = tab_dump
 
 with tabs[0]:
     st.markdown("### 🔥 KUCOIN - تجميع قبل البمب")
     st.caption("العملات اللي الحيتان بتجمع فيها قبل ما تطلع 4x - 5x")
+    st.info("🛡️ الوضع الصارم: Vol x2.5 + CVD قوي + سكور 70+ - بيجيب قليل بس اللي بيجيبه متأكد. لو عايز تجرب خلي السكور 20، لو عايز الجامد بس سيبه 70.")
     if st.button("🔥 افحص KUCOIN الآن", type="primary", key="kucoin_main"):
         ksyms = get_kucoin_symbols()
         st.info(f"تم جلب {len(ksyms)} عملة - هيفحص اول {limit_coins}")
@@ -696,7 +877,7 @@ with tabs[0]:
                         st.success(f"اتبعت {sig['symbol']}")
                         time.sleep(1)
         else:
-            st.warning("مفيش تجميع قوي دلوقتي")
+            st.warning("🛡️ مفيش تجميع جامد دلوقتي - البوت صارم ومش بيبعت اي حاجة. دي مصلحتنا - التأكيدات هتبقى اقوى. استنى السوق يولع وهتلاقي الاشارة الجامدة.")
 
 if focus != "🔥 KUCOIN فقط":
     with tabs[1]:
@@ -777,6 +958,71 @@ if focus != "🔥 KUCOIN فقط":
                         st.warning("مفيش بمب DEX قوي")
                 except Exception as e:
                     st.error(f"خطأ: {e}")
+
+with tab_dump_obj:
+    st.markdown("### 📉 DUMP - انهيار قادم")
+    st.caption("الحيتان بتوزع - بيع قوي + Vol احمر + FVG هابط - انهيار داخل على العملة")
+    if ai_filter == "صارم":
+        st.info("🛡️ الوضع الصارم للدامب: Vol احمر x2.5 + بيع 30%+ + FVG هابط لازم + سكور 70+ - مش اي نزول هيتبعت")
+    else:
+        st.info("😌 الوضع القياسي للدامب: Vol x1.4 + بيع اكتر من شراء + سكور 40+ - هادي")
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        if st.button("📉 افحص دامب KUCOIN", type="primary", key="dump_kucoin"):
+            ksyms_d = get_kucoin_symbols()
+            st.info(f"تم جلب {len(ksyms_d)} عملة - هيفحص اول {limit_coins} للدامب")
+            dresults = []
+            prog_d = st.progress(0)
+            for i, sym in enumerate(ksyms_d[:limit_coins]):
+                prog_d.progress((i+1)/len(ksyms_d[:limit_coins]))
+                dfk = get_kucoin_klines(sym)
+                if dfk is not None:
+                    resd = calc_dump_score(dfk, sym, "KUCOIN")
+                    if resd:
+                        dresults.append(resd)
+                time.sleep(0.03)
+            prog_d.empty()
+            if dresults:
+                dsorted = sorted(dresults, key=lambda x: x['score'], reverse=True)
+                st.success(f"📉 لقينا {len(dsorted)} انهيار قادم!")
+                for sig in dsorted:
+                    render_card(sig)
+                if send_tg:
+                    for sig in dsorted[:5]:
+                        msg = format_telegram_dump(sig, "KUCOIN")
+                        if send_tg_alert(msg):
+                            st.success(f"اتبعت دامب {sig['symbol']}")
+                            time.sleep(1)
+            else:
+                st.warning("🛡️ مفيش دامب صارم دلوقتي - السوق مش بيوزع - دي مصلحتنا")
+    with col_d2:
+        if st.button("📉 افحص دامب CEX", type="primary", key="dump_cex"):
+            syms_d = get_all_symbols()
+            st.info(f"تم جلب {len(syms_d)} عملة - هيفحص اول {limit_coins} للدامب")
+            dresults2 = []
+            prog_d2 = st.progress(0)
+            for i, sym in enumerate(syms_d[:limit_coins]):
+                prog_d2.progress((i+1)/len(syms_d[:limit_coins]))
+                df2 = get_klines(sym)
+                if df2 is not None:
+                    resd2 = calc_dump_score(df2, sym, "CEX")
+                    if resd2:
+                        dresults2.append(resd2)
+                time.sleep(0.03)
+            prog_d2.empty()
+            if dresults2:
+                dsorted2 = sorted(dresults2, key=lambda x: x['score'], reverse=True)
+                st.success(f"📉 لقينا {len(dsorted2)} انهيار قادم!")
+                for sig in dsorted2:
+                    render_card(sig)
+                if send_tg:
+                    for sig in dsorted2[:5]:
+                        msg = format_telegram_dump(sig, "BINANCE")
+                        if send_tg_alert(msg):
+                            st.success(f"اتبعت دامب {sig['symbol']}")
+                            time.sleep(1)
+            else:
+                st.warning("🛡️ مفيش دامب صارم دلوقتي")
 
 backtest_tab = tabs[3]
 with backtest_tab:
