@@ -131,7 +131,9 @@ def analyze(df, sym):
         ch=(last-prev)/prev*100 if prev!=0 else 0
         mv=float(df['vol'].iloc[-20:-1].mean()); lv=float(df['vol'].iloc[-1])
         vs=lv/mv if mv>0 else 1
-        if vs < need_vol: return None, f"Vol x{vs:.2f} < {need_vol}"
+        # FIX V16: Vol مش شرط قاتل - السوق هادي وكل العملات Vol x0.6 - لو رفضناها مش هيجيب حاجة
+        # Vol بقى جزء من السكور بس - البامب والدامب الاتنين
+        pass # Vol لا يرفض
         if abs(ch)>8: return None, f"حركة 1س {ch:.1f}% كبيرة"
         buy,_=calc_cvd(df); sell=-buy
         bb,bm,eb,em=calc_fvg(df)
@@ -143,7 +145,11 @@ def analyze(df, sym):
         if buy<0 and sell>0:
             is_pump=False
         # لو متذبذب جدا - ارفض
-        if abs(buy)<2: return None, f"CVD {buy:.1f}% متذبذب"
+        # FIX: kz_bonus يتعرف قبل السكور - كان بيضرب XRP
+        in_kz, kz_txt = is_killzone() if f_killzone else (True,"")
+        kz_bonus = 10 if (f_killzone and in_kz) else 0
+        funding2 = get_funding(sym) if (f_funding and sym.endswith("USDT")) else 0
+        if abs(buy)<1: return None, f"CVD {buy:.1f}% متذبذب"
         score=int(40 + min(vs*3,15) + abs(buy)*0.3 + (10 if (bm or em) else 0) + kz_bonus)
         if score>95: score=95
         if score < min_score: return None, f"سكور {score} < {min_score}"
@@ -152,8 +158,6 @@ def analyze(df, sym):
         if not want_dump and buy<0: return None, "دامب ملغي من الاختيار"
         btc_ch = get_btc_ch() if f_btc else 0
         if f_btc and btc_ch < -2 and buy>=0: return None, f"BTC {btc_ch:.1f}% بينزف - بامب ملغي"
-        in_kz, kz_txt = is_killzone() if f_killzone else (True,"")
-        kz_bonus = 10 if (f_killzone and in_kz) else 0
         funding = get_funding(sym) if (f_funding and sym.endswith("USDT")) else 0
         if f_funding and funding>0.05 and buy>=0: return None, f"فاندنج {funding:.3f}% فخ - الكل لونج"
         if f_funding and funding<-0.05 and buy<0: return None, "فاندنج فخ دامب"
@@ -164,6 +168,7 @@ def analyze(df, sym):
         else:
             entry=clamp_entry(em,last,False) if em is not None else last*1.007
             stop=last*1.02; tp1=last*0.96; tp2=last*0.92; typ="DUMP"
+        funding = funding2
         extra=""
         if f_trap: extra+=f"🐋 مصيدة: {'السعر رايح يملا FVG' if typ=='PUMP' else 'توزيع بيع - انهيار قادم'} | "
         if f_killzone: extra+=f"⏰ كيل زون: {kz_txt} | "
