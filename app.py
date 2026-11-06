@@ -1,7 +1,7 @@
 import streamlit as st, pandas as pd, requests, time
 from datetime import datetime
 st.set_page_config(page_title="BLY7H V13", layout="wide", page_icon="💎")
-st.markdown("<h1 style='text-align:center'>💎 BLY7H ULTIMATE V13 FULL - كل حاجة</h1><p style='text-align:center'>✅ لو شايف V13 يبقى الملف الجديد وصل - لو شايف V10 يبقى القديم لسه موجود</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center'>💎 BLY7H ULTIMATE</h1><p style='text-align:center'>🧠 ذكاء اصطناعي يتعلم | 🔮 تنبؤ قبل الحركة | ✅ تأكيد 5 منصات | 📊 باك تست حي</p>", unsafe_allow_html=True)
 # --- SIDEBAR ---
 with st.sidebar:
     st.markdown("### 🎛️ التحكم - V13 FULL")
@@ -26,10 +26,14 @@ with st.sidebar:
     mode = st.radio("الوضع", ["😌 قياسي - هادي", "🛡️ صارم"], index=0)
     min_score = st.slider("⭐ اقل سكور", 0, 100, 20)
     limit_coins = st.slider("🪙 عدد العملات", 10, 100, 40)
-    send_tg = st.checkbox("📡 تليجرام", value=False)
+    send_tg = st.checkbox("📡 تليجرام - ابعت كل إشارة", value=True)
+    if st.button("📡 اختبر التليجرام"):
+        ok, msg = send_tg("🧪 اختبار BLY7H - لو وصلك يبقى التليجرام شغال ✅\n@WHYNOTBLY7")
+        if ok: st.success("📡 التليجرام شغال ✅ - الرسالة وصلت")
+        else: st.error(f"📡 التليجرام مش شغال: {msg}")
     st.markdown("---")
-    st.success("V13 FULL - كل حاجة في ملف واحد مضغوط")
-    st.info("لو شايف V13 فوق يبقى التحديث نجح")
+    st.success("V13 FULL")
+    st.info("جاهز للفحص")
 is_strict = "صارم" in mode
 need_vol = 2.5 if is_strict else 1.1
 if min_score <= 25:
@@ -67,12 +71,33 @@ def check_5ex(sym):
         except: pass
     return c, leaders[0]
 def send_tg(text):
+    # ترجع (نجح؟, رسالة السبب) - عشان تعرف ليه مش بيبعت لو فشل
     try:
-        tok=st.secrets.get("TELEGRAM_BOT_TOKEN"); chat=st.secrets.get("TELEGRAM_CHANNEL_ID", st.secrets.get("TELEGRAM_CHAT_ID"))
-        if not tok or not chat: return False
-        r=requests.post(f"https://api.telegram.org/bot{tok}/sendMessage",json={"chat_id":chat,"text":text},timeout=10)
-        return r.status_code==200
-    except: return False
+        tok=st.secrets.get("TELEGRAM_BOT_TOKEN")
+        chat=st.secrets.get("TELEGRAM_CHANNEL_ID", st.secrets.get("TELEGRAM_CHAT_ID"))
+        if not tok: return False, "مفيش TELEGRAM_BOT_TOKEN في Secrets"
+        if not chat: return False, "مفيش TELEGRAM_CHANNEL_ID في Secrets"
+        r=requests.post(f"https://api.telegram.org/bot{tok}/sendMessage",json={"chat_id":chat,"text":text},timeout=15)
+        if r.status_code==200: return True, "اتبعت ✅"
+        if r.status_code==401: return False, "التوكن غلط - راجع @BotFather"
+        if r.status_code==403: return False, "البوت مش أدمن في القناة - ضيفه أدمن"
+        if r.status_code==400: return False, f"Chat ID غلط: {chat} - هاته من @userinfobot"
+        if r.status_code==429:
+            import time as _t; _t.sleep(2); return send_tg(text)
+        return False, f"خطأ تليجرام {r.status_code}"
+    except Exception as e: return False, f"خطأ اتصال: {e}"
+def send_all_tg(signals):
+    # يبعت كل الاشارات - ويرجع تقرير
+    if not signals: return
+    sent=0; last_err=""
+    for s in signals[:5]:
+        ok, msg = send_tg(format_tg(s))
+        if ok: sent+=1
+        else: last_err=msg
+        import time as _t; _t.sleep(1)
+    if sent>0: st.success(f"📡 اتبعت {sent} إشارة للتليجرام ✅")
+    else: st.error(f"📡 التليجرام مش بيبعت: {last_err}")
+    return sent
 def format_tg(s):
     return f"{'🚀 PUMP' if s['type']=='PUMP' else '📉 DUMP'} {s['symbol']}\n⭐ سكور {s['score']} | سعر {s['price']} | Vol x{s['vol']}\n🎯 دخول {s['entry']} | ⛔ ستوب {s['stop']} | ✅ {s['tp1']} | 🏆 {s['tp2']}\n{s.get('extra','')}\n@WHYNOTBLY7"
 def load_mem():
@@ -187,9 +212,9 @@ def get_b_klines(sym):
         return df.dropna()
     except: return None
 # --- NAV ---
-section=st.radio("📂 اختار القسم", ["🔥 KUCOIN", "💛 BINANCE", "🚀 DEX", "📊 باك تست", "🧠 ذاكرة", "🔍 تشخيص"], horizontal=True)
+section=st.radio("📂 اختار القسم", ["🔥 KUCOIN", "💛 BINANCE", "📉 DUMP", "🚀 DEX", "📊 باك تست", "🧠 ذاكرة"], horizontal=True)
 if section=="🔥 KUCOIN":
-    st.markdown("### 🔥 KUCOIN - V13 UNLOCKED")
+    st.markdown("### 🔥 KUCOIN - تجميع قبل البمب")
     st.caption(f"الوضع: {mode} | سكور {min_score}+ | Vol x{need_vol} | FVG: {'مطلوب' if use_fvg else 'مش مطلوب'}")
     if st.button("🔥 افحص KUCOIN الآن", type="primary"):
         syms=get_kucoin(); st.info(f"تم جلب {len(syms)} عملة - هيفحص اول {limit_coins}")
@@ -201,11 +226,12 @@ if section=="🔥 KUCOIN":
             if df is not None:
                 sig,why=analyze(df,sym)
                 if sig: res.append(sig)
-                elif len(debug)<10: debug.append({"عملة":sym,"سبب الرفض":why})
+                elif len(debug)<10: debug.append({"عملة":sym,"الملاحظة":why})
             time.sleep(0.02)
         prog.empty()
         if res:
             st.success(f"🎉 لقينا {len(res)} اشارة!")
+            if send_tg: send_all_tg(sorted(res,key=lambda x: x['score'],reverse=True))
             for s in sorted(res,key=lambda x: x['score'],reverse=True):
                 col1,col2=st.columns([3,1])
                 with col1: st.markdown(f"**{'🚀' if s['type']=='PUMP' else '📉'} {s['symbol']} - {s['type']}** | سعر {s['price']} | Vol x{s['vol']} | CVD {s['buy']}%")
@@ -213,12 +239,12 @@ if section=="🔥 KUCOIN":
                 st.markdown(f"🎯 دخول {s['entry']} | ⛔ ستوب {s['stop']} | ✅ هدف1 {s['tp1']} | 🏆 هدف2 {s['tp2']}")
                 st.markdown("---")
         else:
-            st.warning("مفيش اشارة - شوف التشخيص تحت")
+            st.warning("لا توجد إشارات مطابقة للفلاتر")
         if debug:
-            st.markdown("### 🔍 ليه اترفضوا؟ - اقرب 10 عملات")
+            st.markdown("### 🔍 أقرب 10 عملات للفلتر")
             st.dataframe(pd.DataFrame(debug), use_container_width=True)
 if section=="💛 BINANCE":
-    st.markdown("### 💛 BINANCE - V13 UNLOCKED")
+    st.markdown("### 💛 BINANCE - تنبؤ قبل الحركة")
     if st.button("💛 افحص BINANCE الآن", type="primary"):
         syms=get_binance_syms(); st.info(f"تم جلب {len(syms)} - هيفحص اول {limit_coins}")
         res=[]; debug=[]
@@ -229,16 +255,17 @@ if section=="💛 BINANCE":
             if df is not None:
                 sig,why=analyze(df,sym)
                 if sig: res.append(sig)
-                elif len(debug)<10: debug.append({"عملة":sym,"سبب الرفض":why})
+                elif len(debug)<10: debug.append({"عملة":sym,"الملاحظة":why})
             time.sleep(0.02)
         prog.empty()
         if res:
             st.success(f"🎉 {len(res)} اشارة!")
+            if send_tg: send_all_tg(sorted(res,key=lambda x: x['score'],reverse=True))
             for s in sorted(res,key=lambda x: x['score'],reverse=True):
                 st.markdown(f"**{'🚀' if s['type']=='PUMP' else '📉'} {s['symbol']} - {s['type']}** ⭐ {s['score']} | سعر {s['price']} | Vol x{s['vol']}")
                 st.markdown(f"🎯 دخول {s['entry']} | ⛔ ستوب {s['stop']} | ✅ {s['tp1']} | 🏆 {s['tp2']}")
                 st.markdown("---")
-        else: st.warning("مفيش اشارة")
+        else: st.warning("لا توجد إشارات")
         if debug: st.dataframe(pd.DataFrame(debug), use_container_width=True)
 
 if section=="🚀 DEX":
@@ -262,6 +289,7 @@ if section=="🚀 DEX":
                         ch5=float(pair.get('priceChange',{}).get('m5',0)); v5=float(pair.get('volume',{}).get('m5',0)); liq=float(pair.get('liquidity',{}).get('usd',0))
                         if v5>5000 and ch5>=5 and liq>15000:
                             pp=float(price); st.code(f"🚀 DEX {sym} على {chain}\n💵 {price} دخول {pp} الغاء {pp*0.97:.8f} ستوب {pp*0.95:.8f} هدف {pp*1.3:.8f}\n🔗 {pair.get('url','')}\n@WHYNOTBLY7")
+                            if send_tg: send_tg(f"🚀 DEX {sym} على {chain}\n💵 {price} دخول {pp} الغاء {pp*0.97:.8f} ستوب {pp*0.95:.8f} هدف {pp*1.3:.8f}\n🔗 {pair.get('url','')}\n@WHYNOTBLY7")
                             found+=1
                     except: pass
                 if found==0: st.warning("😴 مفيش بمب DEX قوي")
@@ -292,12 +320,48 @@ if section=="🧠 ذاكرة":
     c1,c2=st.columns(2); c1.metric("اشارات محفوظة",tot); c2.metric("نسبة نجاح",f"{rate:.1f}%")
     st.info("💡 البوت بيحفظ كل اشارة ونتيجتها - والنمط اللي بينجح بياخد بونص اكتر لوحده")
     if mem.get("signals"): st.dataframe(pd.DataFrame(mem["signals"][-20:]), use_container_width=True)
-if section=="🔍 تشخيص":
-    st.markdown("### 🔍 تشخيص - هل البوت بيقرا ولا لا؟")
-    st.info("دوس الزرار - لو جاب ارقام يبقى بيقرا - لو جاب 0 يبقى الانترنت او API واقف")
-    if st.button("🔍 اختبر القراءة"):
-        syms=get_kucoin(); st.write(f"KUCOIN جاب: {len(syms)} عملة - اول 5: {syms[:5]}")
-        df=get_k_klines("BTC-USDT") if syms else None
-        if df is not None: st.write(f"شموع BTC-USDT: {len(df)} شمعة - اخر سعر: {float(df['close'].iloc[-1]):.2f}")
-        syms2=get_binance_syms(); st.write(f"BINANCE جاب: {len(syms2)} عملة")
-        st.success("✅ القراءة شغالة - المشكلة كانت في الفلاتر واتصلحت في V13")
+
+if section=="📉 DUMP":
+    st.markdown("### 📉 DUMP - انهيار قادم")
+    st.caption("توزيع الحيتان - بيع قوي + Vol أحمر + FVG هابط")
+    st.caption(f"الوضع: {mode} | سكور {min_score}+ | Vol x{need_vol}")
+    # زرارين منفصلين - دامب كوكوين ودامب بينانس
+    c_dump1, c_dump2 = st.columns(2)
+    with c_dump1:
+        do_dump_k = st.button("📉 فحص دامب KUCOIN", type="primary", key="dump_k")
+    with c_dump2:
+        do_dump_b = st.button("📉 فحص دامب BINANCE", type="primary", key="dump_b")
+    if do_dump_k or do_dump_b:
+        if do_dump_k:
+            syms_dump = get_kucoin(); get_fn = get_k_klines; src="KUCOIN"
+        else:
+            syms_dump = get_binance_syms(); get_fn = get_b_klines; src="BINANCE"
+        st.info(f"تم جلب {len(syms_dump)} عملة - فحص أول {limit_coins} - {src}")
+        res_dump=[]; debug_dump=[]
+        prog_d=st.progress(0)
+        for i,sym in enumerate(syms_dump[:limit_coins]):
+            prog_d.progress((i+1)/limit_coins)
+            df=get_fn(sym)
+            if df is not None:
+                sig,why=analyze(df,sym)
+                # DUMP بس - لو بامب نتخطاه هنا عشان القسم ده دامب بس
+                if sig and sig['type']=="DUMP":
+                    res_dump.append(sig)
+                elif sig and sig['type']=="PUMP":
+                    pass
+                elif len(debug_dump)<10:
+                    debug_dump.append({"عملة":sym,"الملاحظة":why})
+            time.sleep(0.02)
+        prog_d.empty()
+        if send_tg and res_dump: send_all_tg(sorted(res_dump,key=lambda x: x['score'],reverse=True))
+        if res_dump:
+            st.success(f"🎉 {len(res_dump)} إشارة دامب - {src}")
+            for s in sorted(res_dump,key=lambda x: x['score'],reverse=True):
+                st.markdown(f"**📉 {s['symbol']} - DUMP** ⭐ {s['score']} | سعر {s['price']} | Vol x{s['vol']} | بيع {abs(s['buy'])}%")
+                st.markdown(f"🎯 دخول {s['entry']} | ⛔ ستوب {s['stop']} | ✅ هدف1 {s['tp1']} | 🏆 هدف2 {s['tp2']}")
+                if s.get('extra'): st.caption(s['extra'])
+                st.markdown("---")
+                pass # التليجرام بيتبعت تحت بعد ما نخلص كل الاشارات
+        else:
+            st.warning("لا توجد إشارات دامب مطابقة للفلاتر")
+            if debug_dump: st.dataframe(pd.DataFrame(debug_dump), use_container_width=True)
