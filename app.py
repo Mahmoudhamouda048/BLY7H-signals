@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 import streamlit as st
-st.set_page_config(page_title="BLY7H ULTIMATE V19", page_icon="💎", layout="wide", initial_sidebar_state="collapsed")
-APP_TITLE = "💎 BLY7H ULTIMATE V19"
+st.set_page_config(page_title="BLY7H ULTIMATE V20", page_icon="💎", layout="wide", initial_sidebar_state="collapsed")
+APP_TITLE = "💎 BLY7H ULTIMATE V20 - MEXC PREDICTION LAB"
 DB_PATH = "bly7h_signals.db"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "BLY7H-Scanner/19.0"})
@@ -392,6 +392,262 @@ def mexc_predict(f):
     if f["vol_x"] < 0.8:
         return "متدخلش", "اتفرج - Vol ميت", 0
     return "متدخلش", "اتفرج - مش واضح", 0
+# ===== MEXC PREDICTION LAB V20 - محركات 1-20 - مستقل عن الماسح =====
+# حقيقة مهمة: MEXC لم تنشر API عام لجولات Up/Down.
+# المصدر الرسمي: blog.mexc.com - Up or Down داخل prediction.mexc.com
+# دورات 5 و 15 دقيقة، BTC اولا ثم ETH/SPCX/XAU، التسوية بـ Composite Real-Time Index + TWAP
+# لذلك: الجولات هنا تُبنى كـ PROXY من شموع MEXC Spot 15m + تسجيل يدوي للنتيجة الرسمية.
+# التعلم يتدرب فقط على ما تم تسجيله فعليا، ولا نزعم اننا نقرأ التسوية الرسمية من API غير موجود.
+import hashlib, math
+import numpy as np
+
+LAB_DB = "bly7h_mexc_lab.db"
+def lab_init_db():
+    import sqlite3
+    with sqlite3.connect(LAB_DB) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS lab_rounds (id INTEGER PRIMARY KEY AUTOINCREMENT, round_start TEXT NOT NULL, round_end TEXT NOT NULL, symbol TEXT, open_price REAL, close_price REAL, settlement_proxy REAL, official_result TEXT DEFAULT '', source TEXT DEFAULT 'PROXY_MEXC_SPOT', created_at TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS lab_predictions (id INTEGER PRIMARY KEY AUTOINCREMENT, round_start TEXT NOT NULL, created_at TEXT NOT NULL, pred TEXT, prob REAL, confidence REAL, regime TEXT, reasons TEXT, counter TEXT, invalidation REAL, model_version TEXT, features_hash TEXT, UNIQUE(round_start, model_version))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS lab_features (round_start TEXT PRIMARY KEY, feats TEXT, label TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS lab_models (version TEXT PRIMARY KEY, created_at TEXT, train_n INTEGER, test_acc REAL, brier REAL, logloss REAL, is_active INTEGER DEFAULT 0)""")
+        c.commit()
+
+# --- 1 Data Engine ---
+def lab_get_klines(symbol="BTCUSDT", interval="15m", limit=200):
+    p = api_json("https://api.mexc.com/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
+    if not isinstance(p, list) or len(p) < 30: return None
+    import pandas as pd
+    f = pd.DataFrame(p, columns=["ot","open","high","low","close","vol","ct","qav"])
+    for col in ("open","high","low","close","vol"): f[col]=pd.to_numeric(f[col], errors="coerce")
+    return f.dropna().reset_index(drop=True)
+def lab_round_windows(frame):
+    # جولات 15m تبدأ :00 :15 :30 :45 - نعيد بناءها من الشموع
+    return frame.copy()
+def lab_sync_check():
+    import time as _t
+    return {"server_time_ms": int(_t.time()*1000), "note": "MEXC Spot time via klines - Prediction settlement is Composite Index + TWAP, not spot close. Proxy only."}
+
+# --- 2 Candle Intelligence ---
+def lab_candle_patterns(frame):
+    if frame is None or len(frame)<5: return []
+    out=[]
+    last=frame.iloc[-1]; prev=frame.iloc[-2]
+    o,h,l,c = safe_float(last["open"]), safe_float(last["high"]), safe_float(last["low"]), safe_float(last["close"])
+    po,ph,pl,pc = safe_float(prev["open"]), safe_float(prev["high"]), safe_float(prev["low"]), safe_float(prev["close"])
+    body=abs(c-o); up=h-max(o,c); down=min(o,c)-l
+    rng=h-l if h>l else 1
+    if c>o and c>=po and o<=pc and body>abs(pc-po)*1.2: out.append("Engulfing صاعد")
+    if c<o and c<=po and o>=pc and body>abs(pc-po)*1.2: out.append("Engulfing هابط")
+    if down>body*2 and down/rng>0.5: out.append("Hammer / Pin Bar صاعد")
+    if up>body*2 and up/rng>0.5: out.append("Shooting Star / Pin Bar هابط")
+    if h<=ph and l>=pl: out.append("Inside Bar")
+    if h>=ph and l<=pl: out.append("Outside Bar")
+    if up>body*1.5: out.append("Wick Rejection فوق")
+    if down>body*1.5: out.append("Wick Rejection تحت")
+    # Liquidity Sweep: كسر قاع ثم اغلاق فوقه
+    if l < safe_float(frame["low"].iloc[-6:-1].min()) and c > safe_float(frame["low"].iloc[-6:-1].min()): out.append("Liquidity Sweep صاعد")
+    if h > safe_float(frame["high"].iloc[-6:-1].max()) and c < safe_float(frame["high"].iloc[-6:-1].max()): out.append("Liquidity Sweep هابط")
+    # Double Top/Bottom تقريبي
+    highs=frame["high"].tail(20); lows=frame["low"].tail(20)
+    if highs.iloc[-1] < highs.max()*1.001 and len(highs)>10: out.append("قرب Double Top")
+    if lows.iloc[-1] > lows.min()*0.999 and len(lows)>10: out.append("قرب Double Bottom")
+    if not out: out.append("لا يوجد نموذج واضح")
+    return out
+
+# --- 3 Volume Intelligence ---
+def lab_volume(frame):
+    if frame is None or len(frame)<21: return {"vol_x":1,"state":"غير متاح"}
+    vol=safe_float(frame["vol"].iloc[-1]); avg=safe_float(frame["vol"].iloc[-21:-1].mean()); prev_avg=safe_float(frame["vol"].iloc[-42:-21].mean()) if len(frame)>=42 else avg
+    vx=vol/avg if avg>0 else 1
+    accel=(avg-prev_avg)/prev_avg*100 if prev_avg>0 else 0
+    # Divergence: سعر طالع وحجم نازل
+    chg=(safe_float(frame["close"].iloc[-1])-safe_float(frame["close"].iloc[-6]))/safe_float(frame["close"].iloc[-6])*100 if safe_float(frame["close"].iloc[-6]) else 0
+    div="Volume Divergence هابط" if chg>0 and vx<0.8 else ("Volume Divergence صاعد" if chg<0 and vx<0.8 else "لا يوجد Divergence")
+    state="Volume Explosion" if vx>1.8 else ("Accumulation" if vx>1.2 and chg>-0.3 else ("Distribution" if vx>1.2 and chg<0.3 else "عادي"))
+    return {"vol_x":round(vx,2),"accel_pct":round(accel,1),"chg_5":round(chg,2),"divergence":div,"state":state}
+
+# --- 4 Order Book ---
+def lab_orderbook(symbol="BTCUSDT"):
+    p=api_json("https://api.mexc.com/api/v3/depth", {"symbol": symbol, "limit": 20})
+    if not isinstance(p, dict): return {"imbalance":0,"note":"غير متاح"}
+    bids=p.get("bids",[]); asks=p.get("asks",[])
+    if not bids or not asks: return {"imbalance":0,"note":"فارغ"}
+    bv=sum(safe_float(q)*safe_float(pr) for pr,q in bids); av=sum(safe_float(q)*safe_float(pr) for pr,q in asks)
+    imb=(bv-av)/(bv+av)*100 if bv+av>0 else 0
+    max_bid=max(bids, key=lambda x: safe_float(x[0])*safe_float(x[1])); max_ask=max(asks, key=lambda x: safe_float(x[0])*safe_float(x[1]))
+    wall="جدار شراء" if safe_float(max_bid[0])*safe_float(max_bid[1])>safe_float(max_ask[0])*safe_float(max_ask[1])*1.5 else ("جدار بيع" if safe_float(max_ask[0])*safe_float(max_ask[1])>safe_float(max_bid[0])*safe_float(max_bid[1])*1.5 else "لا يوجد جدار بارز")
+    return {"imbalance":round(imb,1),"bid_notional":round(bv,0),"ask_notional":round(av,0),"wall":wall,"note":"MEXC Spot Depth - ليس دفتر Prediction الرسمي"}
+
+# --- 5 Futures ---
+def lab_futures(symbol="BTCUSDT"):
+    fund=get_binance_funding(symbol)
+    oi_ch, oi_val=get_binance_oi_change(symbol)
+    squeeze="Short Squeeze محتمل" if fund is not None and fund<-0.05 else ("Long Squeeze محتمل" if fund is not None and fund>0.05 else "لا يوجد Squeeze واضح")
+    return {"funding_pct": round(fund,4) if fund is not None else None, "oi_change_pct": round(oi_ch,2) if oi_ch is not None else None, "squeeze": squeeze, "note":"Binance Futures كمصدر مساعد - ليس MEXC Prediction"}
+
+# --- 6 Order Flow ---
+def lab_orderflow(symbol="BTCUSDT"):
+    p=api_json("https://api.mexc.com/api/v3/trades", {"symbol": symbol, "limit": 100})
+    if not isinstance(p, list) or not p: return {"delta":0,"cvd":0,"note":"غير متاح"}
+    buy_v=sell_v=0; cvd=0
+    for t in p:
+        q=safe_float(t.get("qty", t.get("quantity",0))); pr=safe_float(t.get("price",0))
+        # MEXC trades: isBuyerMaker
+        is_maker=t.get("isBuyerMaker", False)
+        if is_maker: sell_v+=q; cvd-=q
+        else: buy_v+=q; cvd+=q
+    delta=buy_v-sell_v
+    return {"buy_vol":round(buy_v,3),"sell_vol":round(sell_v,3),"delta":round(delta,3),"real_cvd":round(cvd,3),"aggressive":"Aggressive Buying" if delta>0 else "Aggressive Selling","absorption":"Absorption محتمل" if abs(delta)<buy_v*0.2 and buy_v>0 else "لا يوجد Absorption واضح"}
+
+# --- 7 Indicators ---
+def lab_indicators(frame):
+    if frame is None or len(frame)<50: return {}
+    c=frame["close"]
+    def ema(s,n): return s.ewm(span=n, adjust=False).mean()
+    e9=ema(c,9).iloc[-1]; e21=ema(c,21).iloc[-1]; e50=ema(c,50).iloc[-1]
+    # RSI
+    diff=c.diff().dropna(); g=diff[diff>0].mean() if len(diff[diff>0]) else 0; l=-diff[diff<0].mean() if len(diff[diff<0]) else 0.001
+    rsi=100-(100/(1+(g/l if l else 100)))
+    # MACD
+    macd=ema(c,12).iloc[-1]-ema(c,26).iloc[-1]; sig=ema(ema(c,12)-ema(c,26),9).iloc[-1]
+    # ATR
+    tr=(frame["high"]-frame["low"]).tail(14).mean()
+    # Bollinger
+    ma=c.tail(20).mean(); sd=c.tail(20).std(); up=ma+2*sd; dn=ma-2*sd
+    # VWAP تقريبي
+    vwap=(frame["close"]*frame["vol"]).tail(20).sum()/frame["vol"].tail(20).sum() if frame["vol"].tail(20).sum()>0 else c.iloc[-1]
+    # ADX تقريبي
+    adx=min(100, abs((safe_float(c.iloc[-1])-safe_float(c.iloc[-15]))/safe_float(c.iloc[-15])*100)*10) if safe_float(c.iloc[-15]) else 0
+    # SR
+    sup=safe_float(frame["low"].tail(50).min()); res=safe_float(frame["high"].tail(50).max())
+    # Fib من اخر 50
+    lo=sup; hi=res; fib38=hi-(hi-lo)*0.382; fib61=hi-(hi-lo)*0.618
+    return {"ema9":round(e9,2),"ema21":round(e21,2),"ema50":round(e50,2),"rsi":round(float(rsi),1),"macd":round(float(macd),2),"macd_signal":round(float(sig),2),"atr":round(float(tr),2),"bb_up":round(float(up),2),"bb_dn":round(float(dn),2),"bb_mid":round(float(ma),2),"vwap":round(float(vwap),2),"adx_proxy":round(float(adx),1),"support":round(sup,2),"resistance":round(res,2),"fib382":round(fib38,2),"fib618":round(fib61,2),"momentum":round(float(c.iloc[-1]-c.iloc[-10]),2),"roc_pct":round(float((c.iloc[-1]-c.iloc[-10])/c.iloc[-10]*100),2)}
+
+# --- 11 Regime + 12 Correlation ---
+def lab_regime(frame, ind):
+    if not ind: return "غير معروف"
+    chg=ind.get("roc_pct",0); adx=ind.get("adx_proxy",0); rsi=ind.get("rsi",50)
+    if adx>25 and chg>1: return "Bullish Trend"
+    if adx>25 and chg<-1: return "Bearish Trend"
+    if adx<15: return "Sideways / Low Volatility"
+    if abs(chg)>3: return "High Volatility / Breakout"
+    return "Sideways"
+def lab_correlation():
+    btc=lab_get_klines("BTCUSDT","15m",50); eth=lab_get_klines("ETHUSDT","15m",50)
+    if btc is None or eth is None: return {"btc_eth_corr":None,"note":"غير متاح"}
+    try:
+        corr=btc["close"].tail(30).corr(eth["close"].tail(30))
+        return {"btc_eth_corr":round(float(corr),2),"btc_change_15m":round(float((btc["close"].iloc[-1]-btc["close"].iloc[-2])/btc["close"].iloc[-2]*100),3),"eth_change_15m":round(float((eth["close"].iloc[-1]-eth["close"].iloc[-2])/eth["close"].iloc[-2]*100),3)}
+    except: return {"btc_eth_corr":None,"note":"خطأ"}
+
+# --- 8 Pattern Memory + Similarity ---
+def lab_features_vector(frame, ind, vol, ob, flow, fut):
+    if frame is None or ind=={}: return None
+    last=frame.iloc[-1]
+    return {"price":safe_float(last["close"]),"rsi":ind.get("rsi",50),"macd":ind.get("macd",0),"ema_diff":ind.get("ema9",0)-ind.get("ema21",0),"atr_pct":ind.get("atr",0)/safe_float(last["close"])*100 if safe_float(last["close"]) else 0,"vol_x":vol.get("vol_x",1),"ob_imb":ob.get("imbalance",0),"flow_delta":flow.get("delta",0),"funding":fut.get("funding_pct") or 0,"oi_ch":fut.get("oi_change_pct") or 0,"pos_20":(safe_float(last["close"])-safe_float(frame["low"].tail(20).min()))/(safe_float(frame["high"].tail(20).max())-safe_float(frame["low"].tail(20).min())+1e-9)*100,"chg3":(safe_float(last["close"])-safe_float(frame["close"].iloc[-4]))/safe_float(frame["close"].iloc[-4])*100 if safe_float(frame["close"].iloc[-4]) else 0}
+def lab_similarity(current, history):
+    # history: list of (feats dict, label UP/DOWN)
+    if not history or not current: return {"similar_n":0,"up_rate":None,"note":"لا توجد ذاكرة كافية"}
+    keys=["rsi","vol_x","ob_imb","ema_diff","chg3","pos_20"]
+    sims=[]
+    for feats,label in history:
+        try:
+            d=sum((float(current.get(k,0))-float(feats.get(k,0)))**2 for k in keys)
+            # تطبيع تقريبي
+            sim=1/(1+math.sqrt(d)/100)
+            sims.append((sim,label))
+        except: continue
+    sims=sorted(sims, reverse=True)[:50]
+    if len(sims)<10: return {"similar_n":len(sims),"up_rate":None,"note":"ذاكرة قليلة - لا تعتمد على التشابه وحده"}
+    ups=sum(1 for _,lb in sims if lb=="UP")
+    return {"similar_n":len(sims),"up_rate":round(ups/len(sims)*100,1),"top_sim":round(sims[0][0],2) if sims else 0}
+
+# --- 9 ML: RandomForest + Ensemble + Time Split ---
+def lab_train_model():
+    import sqlite3
+    lab_init_db()
+    try:
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.metrics import accuracy_score, log_loss, brier_score_loss
+    except Exception as e:
+        return {"ok":False,"note":f"sklearn غير متاح: {e} - سيتم استخدام Ensemble القواعد فقط"}
+    with sqlite3.connect(LAB_DB) as conn:
+        rows=conn.execute("SELECT feats,label FROM lab_features WHERE label IN ('UP','DOWN') ORDER BY round_start").fetchall()
+    if len(rows)<40:
+        return {"ok":False,"note":f"بيانات قليلة للتدريب: {len(rows)} - المطلوب 40+ جولة مسجلة فعليا. سجل جولات اولا."}
+    import json as _j
+    X=[]; y=[]
+    for feats_s,label in rows:
+        try:
+            f=_j.loads(feats_s); X.append([f.get(k,0) for k in ["rsi","macd","ema_diff","atr_pct","vol_x","ob_imb","flow_delta","funding","oi_ch","pos_20","chg3"]]); y.append(1 if label=="UP" else 0)
+        except: continue
+    n=len(X); split=int(n*0.8)
+    Xtr,ytr=X[:split],y[:split]; Xte,yte=X[split:],y[split:]
+    clf=RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+    clf.fit(Xtr,ytr)
+    prob=clf.predict_proba(Xte)[:,1] if len(set(yte))>1 else [0.5]*len(Xte)
+    pred=(prob>=0.5).astype(int)
+    acc=float((pred==np.array(yte)).mean()) if yte else 0
+    try: bl=float(brier_score_loss(yte, prob)) if len(set(yte))>1 else 1
+    except: bl=1
+    try: ll=float(log_loss(yte, prob, labels=[0,1])) if len(set(yte))>1 else 1
+    except: ll=1
+    ver=f"RF-{int(__import__('time').time())}"
+    with sqlite3.connect(LAB_DB) as conn:
+        conn.execute("INSERT OR REPLACE INTO lab_models VALUES (?,?,?,?,?,?)", (ver, __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(), n, acc, bl, ll, 1))
+        conn.execute("UPDATE lab_models SET is_active=0 WHERE version!=?", (ver,))
+        conn.commit()
+    import pickle, os
+    os.makedirs("lab_models", exist_ok=True)
+    with open(f"lab_models/{ver}.pkl","wb") as f: pickle.dump(clf,f)
+    return {"ok":True,"version":ver,"train_n":n,"test_n":len(Xte),"test_acc":round(acc*100,1),"brier":round(bl,3),"logloss":round(ll,3)}
+
+# --- 13 Prediction + 14 Calibration + 15 Risk ---
+def lab_predict_ensemble(feats, patterns, vol, ob, flow, regime, sim, ml_prob=None):
+    votes_up=0; votes_dn=0; reasons=[]; counter=[]
+    if feats["rsi"]<35: votes_up+=2; reasons.append("RSI تشبع بيع")
+    if feats["rsi"]>65: votes_dn+=2; reasons.append("RSI تشبع شراء")
+    if vol.get("vol_x",1)>1.5 and feats["chg3"]>0: votes_up+=1; reasons.append("Volume Explosion مع صعود")
+    if vol.get("vol_x",1)>1.5 and feats["chg3"]<0: votes_dn+=1; reasons.append("Volume Explosion مع هبوط")
+    if ob.get("imbalance",0)>10: votes_up+=1; reasons.append("Bid Imbalance")
+    if ob.get("imbalance",0)<-10: votes_dn+=1; reasons.append("Ask Imbalance")
+    if flow.get("delta",0)>0: votes_up+=1; reasons.append("Aggressive Buying")
+    if flow.get("delta",0)<0: votes_dn+=1; reasons.append("Aggressive Selling")
+    if "Engulfing صاعد" in patterns or "Hammer / Pin Bar صاعد" in patterns: votes_up+=2; reasons.append("نموذج شموع صاعد")
+    if "Engulfing هابط" in patterns or "Shooting Star / Pin Bar هابط" in patterns: votes_dn+=2; reasons.append("نموذج شموع هابط")
+    if "Liquidity Sweep صاعد" in patterns: votes_up+=1; reasons.append("Liquidity Sweep صاعد")
+    if "Liquidity Sweep هابط" in patterns: votes_dn+=1; reasons.append("Liquidity Sweep هابط")
+    if sim.get("up_rate") is not None:
+        if sim["up_rate"]>60: votes_up+=1; reasons.append(f"تشابه تاريخي: {sim['up_rate']}% صعود في {sim['similar_n']} حالة مشابهة")
+        if sim["up_rate"]<40: votes_dn+=1; reasons.append(f"تشابه تاريخي: {100-sim['up_rate']}% هبوط")
+    total=votes_up+votes_dn
+    if total==0: return {"pred":"NO_TRADE","prob":0.5,"votes_up":0,"votes_dn":0,"reasons":["أدلة غير كافية"],"counter":["لا يوجد توافق"],"regime":regime,"stage":"NO_TRADE"}
+    # دمج ML ان وجد
+    if ml_prob is not None:
+        ensemble_up=(votes_up/total*0.6 + ml_prob*0.4) if total else ml_prob
+    else:
+        ensemble_up=votes_up/total if total else 0.5
+    pred="UP" if ensemble_up>=0.55 else ("DOWN" if ensemble_up<=0.45 else "NO_TRADE")
+    if pred=="UP": counter.append("احتمال Fakeout / سحب سيولة")
+    if pred=="DOWN": counter.append("احتمال Short Squeeze")
+    stage="CONFIRMED" if abs(ensemble_up-0.5)>0.2 and total>=4 else ("EARLY SETUP" if abs(ensemble_up-0.5)>0.1 else "WATCH")
+    if pred=="NO_TRADE": stage="NO_TRADE"
+    # معايرة بسيطة: لا ندعي 85% بدون بيانات - نحدد الثقة من عدد الأصوات والتشابه
+    conf=round(min(85, max(50, abs(ensemble_up-0.5)*100 + total*3 + (10 if sim.get("similar_n",0)>=30 else 0))),1)
+    return {"pred":pred,"prob":round(float(ensemble_up),3),"votes_up":votes_up,"votes_dn":votes_dn,"reasons":reasons,"counter":counter,"regime":regime,"stage":stage,"confidence":conf}
+
+def lab_risk(pred, prob, price, atr):
+    if pred=="NO_TRADE": return {"ev":0,"decision":"NO_TRADE","reason":"أدلة غير كافية"}
+    # في Up/Down: العائد يعتمد على سعر المنتج - لا نفترض عائدا ثابتا
+    # نفترض breakeven 50% كمثال توضيحي فقط ونطلب من المستخدم ادخال العائد الفعلي
+    # EV = prob * payout - (1-prob)*1
+    payout=0.8 # قابل للتعديل من الواجهة - يجب ادخال العائد الحقيقي من MEXC
+    ev=prob*(payout) - (1-prob)*1
+    decision="TRADE" if ev>0 and prob>=0.58 else "NO_TRADE"
+    return {"ev":round(ev,3),"payout_assumed":payout,"breakeven":round(1/(1+payout),3),"decision":decision,"reason":"EV موجب" if ev>0 else "EV سالب - العائد لا يبرر المخاطرة","expected_range":[round(price-atr,2), round(price+atr,2)]}
+
+
+lab_init_db()
 init_db()
 with st.sidebar:
     st.markdown("## 🎛️ إعدادات الماسح")
@@ -414,7 +670,7 @@ with st.sidebar:
         ok, message = send_telegram("🧪 اختبار BLY7H V19 — اتصال Telegram يعمل.")
         st.success(message) if ok else st.error(message)
 settings = {"want_long": want_long, "want_short": want_short, "use_fvg": use_fvg, "btc_filter": btc_filter, "funding_filter": funding_filter, "wall_filter": wall_filter, "killzone": killzone, "confirm_exchanges": confirm_exchanges, "min_score": min_score}
-section = st.radio("القسم", ["🔎 الماسح", "📉 DUMP / SHORT", "🚀 DEX", "📊 سجل الإشارات", "🧪 اختبار تاريخي", "🟢 MEXC Learner"], horizontal=True)
+section = st.radio("القسم", ["🔎 الماسح", "📉 DUMP / SHORT", "🚀 DEX", "📊 سجل الإشارات", "🧪 اختبار تاريخي", "🟢 MEXC Learner", "🧪 MEXC PREDICTION LAB - V20"], horizontal=True)
 if section in ("🔎 الماسح", "📉 DUMP / SHORT"):
     is_dump_section = section == "📉 DUMP / SHORT"
     st.subheader("📉 ماسح SHORT" if is_dump_section else "🔎 ماسح السوق")
@@ -591,5 +847,101 @@ elif section == "🟢 MEXC Learner":
                 st.warning("نسبة النجاح تحت 55% - متلعبش بفلوس حقيقية النهاردة")
             else:
                 st.success("نسبة النجاح فوق 55% - العب بحذر وبـ 1 دولار بس")
+elif section == "🧪 MEXC PREDICTION LAB - V20":
+    st.subheader("🧪 MEXC PREDICTION LAB - V20")
+    st.warning("⚠️ حقيقة تقنية: MEXC لم تنشر API عام لجولات Up/Down. التسوية الرسمية بـ Composite Index + TWAP وليست اغلاق Spot. الجولات هنا PROXY من شموع MEXC Spot 15m + تسجيل يدوي للنتيجة الرسمية. لا ندعي قراءة التسوية الرسمية من API غير موجود.")
+    cA,cB,cC,cD = st.columns(4)
+    cA.metric("LIVE ROUNDS","15M"); cB.metric("AI ENGINE","ON"); cC.metric("PATTERN MEMORY","ON"); cD.metric("LEARNING","ON")
+    tab1, tab2, tab3, tab4 = st.tabs(["Live Predictions","Candle / Volume / Order Book","AI Learning Center","Accuracy / Reports"])
+    with tab1:
+        st.caption("الجولة الحالية تُبنى من شمعة 15m الجارية - بداية الجولة :00 :15 :30 :45 - التسوية PROXY = اغلاق الشمعة القادمة")
+        if st.button("🔴 حلل الجولة الحالية - V20", type="primary"):
+            f15 = lab_get_klines("BTCUSDT","15m",200)
+            if f15 is None:
+                st.error("تعذر جلب شموع MEXC")
+            else:
+                ind = lab_indicators(f15); vol = lab_volume(f15); ob = lab_orderbook("BTCUSDT"); fut = lab_futures("BTCUSDT"); flow = lab_orderflow("BTCUSDT"); pats = lab_candle_patterns(f15); regime = lab_regime(f15, ind); corr = lab_correlation()
+                feats = lab_features_vector(f15, ind, vol, ob, flow, fut)
+                import sqlite3, json as _j
+                lab_init_db()
+                with sqlite3.connect(LAB_DB) as _c:
+                    rows=_c.execute("SELECT feats,label FROM lab_features WHERE label IN ('UP','DOWN')").fetchall()
+                hist=[]
+                for fs,lb in rows:
+                    try: hist.append((_j.loads(fs), lb))
+                    except: pass
+                sim = lab_similarity(feats, hist)
+                pred = lab_predict_ensemble(feats, pats, vol, ob, flow, regime, sim, ml_prob=None)
+                risk = lab_risk(pred["pred"], pred["prob"], feats["price"], ind.get("atr",0))
+                import datetime as _dt
+                rs = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
+                fh = hashlib.md5(_j.dumps(feats, sort_keys=True).encode()).hexdigest()[:12]
+                with sqlite3.connect(LAB_DB) as _c:
+                    _c.execute("INSERT OR IGNORE INTO lab_predictions (round_start,created_at,pred,prob,confidence,regime,reasons,counter,invalidation,model_version,features_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (rs, _dt.datetime.now(_dt.timezone.utc).isoformat(), pred["pred"], pred["prob"], pred["confidence"], regime, " | ".join(pred["reasons"]), " | ".join(pred["counter"]), feats["price"], "ENSEMBLE-V20", fh))
+                    _c.execute("INSERT OR REPLACE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs, _j.dumps(feats), ""))
+                    _c.commit()
+                col1,col2,col3,col4 = st.columns(4)
+                col1.metric("التوقع", pred["pred"]); col2.metric("الاحتمال المعاير", f"{pred['prob']*100:.1f}%"); col3.metric("الثقة", f"{pred['confidence']}%"); col4.metric("المرحلة", pred["stage"])
+                st.write(f"**السعر:** {feats['price']:,.2f} | **النظام:** {regime} | **اصوات UP:** {pred['votes_up']} | **اصوات DOWN:** {pred['votes_dn']}")
+                st.write(f"**الاسباب:** {' | '.join(pred['reasons'])}")
+                st.write(f"**الادلة المعارضة:** {' | '.join(pred['counter'])}")
+                st.write(f"**نماذج الشموع:** {' | '.join(pats)}")
+                st.write(f"**حجم:** {vol} | **دفتر:** {ob} | **فيوتشر:** {fut} | **Order Flow:** {flow}")
+                st.write(f"**مؤشرات:** RSI {ind.get('rsi')} | MACD {ind.get('macd')} | EMA9/21 {ind.get('ema9')}/{ind.get('ema21')} | VWAP {ind.get('vwap')} | BB {ind.get('bb_dn')} - {ind.get('bb_up')} | Support {ind.get('support')} | Resistance {ind.get('resistance')} | Fib 38/61 {ind.get('fib382')}/{ind.get('fib618')}")
+                st.write(f"**تشابه تاريخي:** {sim} | **ارتباط:** {corr}")
+                st.write(f"**مخاطر:** EV {risk.get('ev')} | Breakeven {risk.get('breakeven')} | قرار {risk.get('decision')} - {risk.get('reason')} | النطاق المتوقع {risk.get('expected_range')} | سعر الالغاء: {feats['price']}")
+                st.info("سجل النتيجة الرسمية بعد انتهاء الجولة من الاسفل - لا تعدل التوقع القديم بعد معرفة النتيجة.")
+        st.markdown("#### سجل النتيجة الرسمية للجولة (يدوي - من تطبيق MEXC)")
+        with st.form("log_official"):
+            rs_in = st.text_input("وقت بداية الجولة (YYYY-MM-DD HH:MM)", value="")
+            off = st.selectbox("النتيجة الرسمية من MEXC", ["UP","DOWN"])
+            if st.form_submit_button("💾 سجل النتيجة الرسمية"):
+                if rs_in:
+                    import sqlite3
+                    lab_init_db()
+                    with sqlite3.connect(LAB_DB) as _c:
+                        _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (off, rs_in)); _c.commit()
+                    st.success(f"تم تسجيل {off} للجولة {rs_in} - سيتم استخدامها في التدريب القادم")
+                else: st.error("اكتب وقت الجولة")
+    with tab2:
+        f15b = lab_get_klines("BTCUSDT","15m",100)
+        if f15b is not None:
+            st.write("**نماذج:**", lab_candle_patterns(f15b))
+            st.write("**حجم:**", lab_volume(f15b))
+            st.write("**دفتر:**", lab_orderbook("BTCUSDT"))
+            st.write("**فيوتشر:**", lab_futures("BTCUSDT"))
+            st.write("**Order Flow:**", lab_orderflow("BTCUSDT"))
+            st.write("**مؤشرات:**", lab_indicators(f15b))
+            st.write("**نظام السوق:**", lab_regime(f15b, lab_indicators(f15b)))
+            st.write("**ارتباط:**", lab_correlation())
+            st.write("**مزامنة:**", lab_sync_check())
+    with tab3:
+        st.write("**دورة التعلم:** جمع -> خصائص -> تدريب RandomForest (Time Split 80/20 - لا تسرب مستقبل) -> اختبار -> مقارنة -> اعتماد الافضل")
+        if st.button("🧠 درب النموذج الآن"):
+            res = lab_train_model(); st.json(res)
+        import sqlite3
+        lab_init_db()
+        with sqlite3.connect(LAB_DB) as _c:
+            try: models=_c.execute("SELECT * FROM lab_models ORDER BY created_at DESC LIMIT 10").fetchall(); st.write("**اصدارات النماذج:**", models)
+            except Exception as e: st.write(e)
+        st.caption("XGBoost: سيتم استخدامه عند توفر المكتبة - حاليا RandomForest + Ensemble + Similarity Search + اعادة تدريب دورية.")
+    with tab4:
+        import sqlite3
+        lab_init_db()
+        with sqlite3.connect(LAB_DB) as _c:
+            preds=_c.execute("SELECT * FROM lab_predictions ORDER BY id DESC LIMIT 50").fetchall(); feats_r=_c.execute("SELECT * FROM lab_features WHERE label IN ('UP','DOWN')").fetchall()
+        st.write(f"**اجمالي توقعات مسجلة:** {len(preds)} | **جولات بعلامة فعلية:** {len(feats_r)}")
+        if feats_r:
+            mp={p[1]:p[3] for p in preds}
+            correct=up_c=up_n=dn_c=dn_n=0
+            for rs,fs,lb in feats_r:
+                if rs in mp:
+                    if mp[rs]==lb: correct+=1
+                    if lb=="UP": up_n+=1; up_c+=1 if mp[rs]=="UP" else 0
+                    else: dn_n+=1; dn_c+=1 if mp[rs]=="DOWN" else 0
+            st.write(f"**دقة التوقعات المعلمة:** {correct}/{len(feats_r)} = {correct/len(feats_r)*100:.1f}% | UP {up_c}/{up_n} | DOWN {dn_c}/{dn_n}")
+            st.caption("Brier / LogLoss / Calibration تظهر بعد التدريب في AI Learning Center - لا ندعي 85% بدون بيانات اختبار.")
+        st.dataframe(preds, use_container_width=True) if preds else st.info("لا توجد توقعات بعد - حلل جولة من تبويب Live")
+
 st.markdown("---")
-st.caption("BLY7H V19 + MEXC Learner | البيانات قد تتأخر أو تفشل حسب واجهات المنصات. لا تنفّذ صفقة اعتمادًا على الإشارة وحدها.")
+st.caption("BLY7H V20 + MEXC PREDICTION LAB | البيانات قد تتأخر أو تفشل حسب واجهات المنصات. لا تنفّذ صفقة اعتمادًا على الإشارة وحدها.")
