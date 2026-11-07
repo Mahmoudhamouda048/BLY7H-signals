@@ -1,4 +1,6 @@
-# BLY7H ULTIMATE
+# BLY7H ULTIMATE 
+#dark signs 
+#Real gains 
 import os, json, time, sqlite3, hashlib, math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -42,7 +44,7 @@ def safe_float(v, d=0.0):
         x=float(v); return x if pd.notna(x) else d
     except Exception: return d
 def clamp_entry(entry, price, is_long):
-    # محفوظ كما هو - لكن الدخول الاساسي = السعر اللحظي (انظر analyze)
+    # trade with BLY7TRADER 
     if price<=0: return entry
     if abs(entry-price)/price*100>1.5: return price*(0.997 if is_long else 1.003)
     return entry
@@ -177,8 +179,7 @@ def analyze(frame, symbol, settings):
         cvd_proxy=candle_volume_delta_proxy(frame)
         if abs(cvd_proxy)<3: return None,f"ضغط الشموع ضعيف: {cvd_proxy:.1f}%"
         side="LONG" if cvd_proxy>0 else "SHORT"
-        # النظام هو اللي بيقرر - مفيش حظر يدوي
-        # النظام هو اللي بيقرر SHORT لوحده
+        # Wait for strong confirmation to protect your capital.
         btc_change=get_btc_change() if settings["btc_filter"] else None
         if settings["btc_filter"] and btc_change is not None:
             if side=="LONG" and btc_change<-2: return None,f"فلتر BTC: هبوط {btc_change:.2f}%"
@@ -192,46 +193,106 @@ def analyze(frame, symbol, settings):
             if side=="SHORT" and funding<-0.05: return None,f"فاندنج سالب ضد SHORT: {funding:.4f}%"
         score=40; score+=min(max(vol_ratio,0)*4,20); score+=min(abs(cvd_proxy)*0.25,20); score+=8 if ((side=="LONG" and bull_fvg) or (side=="SHORT" and bear_fvg)) else 0; score+=5 if in_kz else 0; score=min(int(score),95)
         if score<settings["min_score"]: return None,f"السكور {score} أقل من المطلوب {settings['min_score']}"
-        # ===== التعديل الوحيد: TP/SL بناء على السعر اللحظي + التحليل الاحترافي + الادوات - مش ارقام عشوائية =====
-        # الدخول = السعر اللحظي بالظبط - مش FVG قديم ولا last*0.997
-        # الاستوب = نقطة اللاعودة بالظبط - قاع/قمة FVG - او قاع/قمة Order Block - او قاع/قمة اخر 20 شمعة
-        # TPs = من الستركشر - قمة/قاع FVG - القمة/القاع الاخيرة - امتداد النموذج - مش *1.03 و *1.06
         live_price=last
         entry=live_price
-        recent_high=safe_float(frame["high"].tail(20).max()); recent_low=safe_float(frame["low"].tail(20).min())
+        #trade with BLY7TRADER 
+        try:
+            _tr = (frame["high"]-frame["low"]).tail(14).mean()
+            atr_v = float(_tr) if _tr and float(_tr)>0 else abs(last*0.01)
+        except Exception: atr_v = abs(last*0.01)
+        if atr_v <= 0: atr_v = abs(last*0.01)
+        
+        recent_high = safe_float(frame["high"].tail(20).max()); recent_low = safe_float(frame["low"].tail(20).min())
+        high50 = safe_float(frame["high"].tail(50).max()); low50 = safe_float(frame["low"].tail(50).min())
+        _highs = sorted([safe_float(x) for x in frame["high"].tail(30).tolist() if safe_float(x) > live_price])
+        _lows = sorted([safe_float(x) for x in frame["low"].tail(30).tolist() if safe_float(x) < live_price], reverse=True)
+        # Order Block - 
         ob_low=safe_float(frame["low"].iloc[-3]); ob_high=safe_float(frame["high"].iloc[-3])
+        # FVG
         if side=="LONG":
-            # نقطة اللاعودة
-            if bull_fvg and abs(bull_fvg[2]-live_price)/live_price<=0.015:
-                no_return=float(bull_fvg[0]); nr_reason="قاع FVG"
+            #الاستوب:  🙈🙊 ---
+            if bull_fvg and abs(bull_fvg[2]-live_price)/live_price<=0.02:
+                no_return=float(bull_fvg[0]); nr_reason="قاع FVG - من الشموع"
+            elif ob_low < live_price:
+                no_return=float(ob_low); nr_reason="قاع Order Block - اخر 3 شموع"
             else:
-                no_return=float(ob_low); nr_reason="قاع Order Block"
+                no_return=float(recent_low); nr_reason="قاع اخر 20 شمعة - Swing Low"
+            _dist = entry - no_return
+            if _dist < 0.6*atr_v:
+                no_return = entry - 0.8*atr_v; nr_reason += " + ضبط ATR (كان لازق)"
+            elif _dist > 2.5*atr_v:
+                no_return = entry - 2.0*atr_v; nr_reason += " + ضبط ATR (كان بعيد اوي)"
             stop=float(no_return)
-            # TP1 = قمة FVG بالظبط - او قمة OB
-            if bull_fvg and bull_fvg[1]>live_price: tp1=float(bull_fvg[1]); tp1_r="قمة FVG"
-            elif ob_high>live_price: tp1=float(ob_high); tp1_r="قمة Order Block"
-            else: tp1=float(recent_high); tp1_r="القمة الاخيرة"
-            # TP2 = القمة الاخيرة - منطقة السيولة
-            tp2=float(recent_high) if recent_high>tp1 else tp1; tp2_r="القمة الاخيرة - سيولة"
-            # TP3 رنر = امتداد النموذج: TP2 + (TP2 - نقطة اللاعودة) - لو العملة هتعمل 50x الرنر يكمل
-            model_h=tp2-no_return if tp2>no_return else 0
-            tp3=float(tp2+model_h) if model_h>0 else tp2; tp3_r="امتداد النموذج"
-        else:
-            if bear_fvg and abs(bear_fvg[2]-live_price)/live_price<=0.015:
-                no_return=float(bear_fvg[1]); nr_reason="قمة FVG"
+            risk = entry - stop
+            # ---🎯 TP1 ---
+            _cands = []
+            if bull_fvg and float(bull_fvg[1]) > live_price: _cands.append((float(bull_fvg[1]), "قمة FVG"))
+            if ob_high > live_price: _cands.append((float(ob_high), "قمة Order Block"))
+            if _highs: _cands.append((_highs[0], "اول مقاومة - Swing High"))
+            if recent_high > live_price: _cands.append((float(recent_high), "القمة الاخيرة 20 شمعة"))
+            _cands = sorted([c for c in _cands if c[0] > live_price + 0.5*atr_v])
+            if _cands: tp1, tp1_r = _cands[0]
+            else: tp1, tp1_r = entry + 1.5*atr_v, "ATR 1.5 - مفيش مقاومة قريبة"
+            #  TP1 
+            if (tp1-entry) < 1.2*risk:
+                tp1 = entry + 1.5*risk; tp1_r += " + تمديد لـ RR 1.5"
+            # ---🎯 TP2:
+            _cands2 = [c for c in _cands if c[0] > tp1 + 0.5*atr_v]
+            if _cands2: tp2, tp2_r = _cands2[0]
+            elif high50 > tp1: tp2, tp2_r = float(high50), "قمة 50 شمعة - سيولة"
+            else: tp2, tp2_r = entry + 2.5*risk, "ATR - امتداد RR 2.5"
+            if (tp2-entry) < 2.0*risk:
+                tp2 = entry + 2.5*risk; tp2_r += " + تمديد لـ RR 2.5"
+            # --- 🎯TP3 رنر: امتداد النموذج - فيبوناتشي 1.618 من المخاطرة + القمة ---
+            tp3 = entry + (tp2-entry)*1.0 + risk*0.618
+            
+            if (tp3-tp2) < 0.8*atr_v: tp3 = tp2 + 1.0*atr_v
+            tp3_r="امتداد النموذج + فيبوناتشي - رنر"
+        else:  # SHORT
+            if bear_fvg and abs(bear_fvg[2]-live_price)/live_price<=0.02:
+                no_return=float(bear_fvg[1]); nr_reason="قمة FVG - من الشموع"
+            elif ob_high > live_price:
+                no_return=float(ob_high); nr_reason="قمة Order Block - اخر 3 شموع"
             else:
-                no_return=float(ob_high); nr_reason="قمة Order Block"
+                no_return=float(recent_high); nr_reason="قمة اخر 20 شمعة - Swing High"
+            _dist = no_return - entry
+            if _dist < 0.6*atr_v:
+                no_return = entry + 0.8*atr_v; nr_reason += " + ضبط ATR (كان لازق)"
+            elif _dist > 2.5*atr_v:
+                no_return = entry + 2.0*atr_v; nr_reason += " + ضبط ATR (كان بعيد اوي)"
             stop=float(no_return)
-            if bear_fvg and bear_fvg[0]<live_price: tp1=float(bear_fvg[0]); tp1_r="قاع FVG"
-            elif ob_low<live_price: tp1=float(ob_low); tp1_r="قاع Order Block"
-            else: tp1=float(recent_low); tp1_r="القاع الاخير"
-            tp2=float(recent_low) if recent_low<tp1 else tp1; tp2_r="القاع الاخير - سيولة"
-            model_h=no_return-tp2 if no_return>tp2 else 0
-            tp3=float(tp2-model_h) if model_h>0 else tp2; tp3_r="امتداد النموذج"
+            risk = stop - entry
+            _cands = []
+            if bear_fvg and float(bear_fvg[0]) < live_price: _cands.append((float(bear_fvg[0]), "قاع FVG"))
+            if ob_low < live_price: _cands.append((float(ob_low), "قاع Order Block"))
+            if _lows: _cands.append((_lows[0], "اول دعم - Swing Low"))
+            if recent_low < live_price: _cands.append((float(recent_low), "القاع الاخير 20 شمعة"))
+            _cands = sorted([c for c in _cands if c[0] < live_price - 0.5*atr_v], reverse=True)
+            if _cands: tp1, tp1_r = _cands[0]
+            else: tp1, tp1_r = entry - 1.5*atr_v, "ATR 1.5 - مفيش دعم قريب"
+            if (entry-tp1) < 1.2*risk:
+                tp1 = entry - 1.5*risk; tp1_r += " + تمديد لـ RR 1.5"
+            _cands2 = [c for c in _cands if c[0] < tp1 - 0.5*atr_v]
+            if _cands2: tp2, tp2_r = _cands2[0]
+            elif low50 < tp1: tp2, tp2_r = float(low50), "قاع 50 شمعة - سيولة"
+            else: tp2, tp2_r = entry - 2.5*risk, "ATR - امتداد RR 2.5"
+            if (entry-tp2) < 2.0*risk:
+                tp2 = entry - 2.5*risk; tp2_r += " + تمديد لـ RR 2.5"
+            tp3 = entry - (entry-tp2)*1.0 - risk*0.618
+            if (tp2-tp3) < 0.8*atr_v: tp3 = tp2 - 1.0*atr_v
+            tp3_r="امتداد النموذج + فيبوناتشي - رنر"
+        if abs(tp1-entry) < 0.3*atr_v:
+            tp1 = entry + 1.5*atr_v if side=="LONG" else entry - 1.5*atr_v; tp1_r += " + اصلاح Bug - كان = الدخول"
+        if abs(tp2-tp1) < 0.5*atr_v:
+            tp2 = tp1 + 1.0*atr_v if side=="LONG" else tp1 - 1.0*atr_v; tp2_r += " + اصلاح Bug - كان = TP1"
+        if abs(tp3-tp2) < 0.5*atr_v:
+            tp3 = tp2 + 1.0*atr_v if side=="LONG" else tp2 - 1.0*atr_v
+        plan_txt = f"الخطة: TP1 اقفل 40% | TP2 اقفل 30% | حرك الوقف للدخول | TP3 سيب 30% رنر | RR TP1 {abs(tp1-entry)/abs(entry-stop):.2f} | RR TP2 {abs(tp2-entry)/abs(entry-stop):.2f}"
         notes=[f"📊 CVD proxy: {cvd_proxy:+.1f}% (حجم الشموع، وليس CVD صفقات)", f"📦 حجم آخر شمعة: x{vol_ratio:.2f} من متوسط 20 شمعة", f"⏰ {kz_label}" if settings["killzone"] else "⏰ فلتر الوقت متوقف", f"🐋 {candle_trap_note(frame, side, cvd_proxy)}"]
         rel=bull_fvg if side=="LONG" else bear_fvg
         if rel: notes.append(f"FVG: {rel[0]:.8g} إلى {rel[1]:.8g}؛ المنتصف {rel[2]:.8g}")
         notes.append(f"⛔ الاستوب = نقطة اللاعودة: {stop} - {nr_reason} - كسرها = النموذج مات")
+        notes.append(f"📏 ATR(14): {atr_v:.8g} | المخاطرة: {abs(entry-stop):.8g} ({abs(entry-stop)/entry*100:.2f}%) | {plan_txt}")
         notes.append(f"✅ TP1: {tp1} - {tp1_r} | 🏆 TP2: {tp2} - {tp2_r} | 🏆 TP3 رنر: {tp3} - {tp3_r}")
         if settings["funding_filter"]: notes.append(f"💸 Funding Binance: {funding:+.4f}%" if funding is not None else "💸 Funding: غير متاح لهذا الرمز")
         oi_ch,oi_val=get_binance_oi_change(symbol)
@@ -306,49 +367,28 @@ def lab_init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS lab_features (round_start TEXT PRIMARY KEY, feats TEXT, label TEXT)""")
         c.execute("""CREATE TABLE IF NOT EXISTS lab_models (version TEXT PRIMARY KEY, created_at TEXT, train_n INTEGER, test_acc REAL, brier REAL, logloss REAL, is_active INTEGER DEFAULT 0)""")
         c.commit()
-# ===== المصدر الرسمي الحقيقي - من سكرين MEXC نفسه - Chainlink BTC/USD TWAP 60s =====
-# قواعد السوق من السكرين:
-# - ستنتهي هذه السوق إلى "ارتفاع" إذا كان متوسط السعر المرجح بالوقت (TWAP) لبيتكوين الذي تولده تشين لينك خلال النطاق الزمني المحدد في العنوان من أو يساوي السعر في بداية ذلك النطاق - وإلا ستنتهي إلى "هبوط"
-# - مصدر التسوية لهذه السوق هو المعلومات من تشين لينك - وتحديدا بيانات تدفق BTC/USD TWAP المتاح على https://data.chain.link/streams/btc-usd-twap-60s-streams
-# - يرجى ملاحظة أن هذه السوق تتعلق بالسعر وفقا لتدفق بيانات TWAP من تشين لينك لزوج الأصول BTC/USD - وليس وفقا لأي مصادر أخرى أو أسواق العقود الفورية
-# - ملاحظة مهمة: تستند أسعار التسوية إلى مؤشر مركب
 CHAINLINK_TWAP_URL = "https://data.chain.link/streams/btc-usd-twap-60s-streams"
 def lab_fetch_chainlink_twap(symbol="BTCUSDT"):
-    # 1) حاول Chainlink Data Streams الرسمي - لو طلب API Key - بيرجع 401/403 - بنسجل ده وبنكمل للبديل
-    # 2) Chainlink Price Feed العام BTC/USD - نفس مصدر Chainlink - من غير Key - https://api.chain.link / feeds
-    # 3) MEXC Spot - جزء من Composite Index - بديل مؤقت - وبيتسجل كمصدر بديل مش رسمي
     try:
         r = requests.get(CHAINLINK_TWAP_URL, headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
         if r.status_code==200 and ("TWAP" in r.text or "BTC" in r.text):
             return {"ok":True,"source":"Chainlink BTC/USD TWAP 60s REAL - data.chain.link/streams/btc-usd-twap-60s-streams","note":"المصدر الرسمي من سكرين MEXC","twap_page_ok":True}
     except Exception: pass
-    # Chainlink Feed العام - BTC/USD - Decentralized Oracle - نفس شبكة Chainlink
     try:
-        # Chainlink Data Feeds - BTC/USD - عبر API العام
+        # TRADE WITH BLY7H TRADER 
         r = requests.get("https://api.chain.link/v1/feeds/BTC-USD", headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
         if r.status_code==200:
             j=r.json()
-            # نحاول نطلع السعر من اي شكل
             price=None
             if isinstance(j,dict):
                 price=j.get("price") or j.get("value") or (j.get("data") or {}).get("price") if isinstance(j.get("data"),dict) else None
             if price: return {"ok":True,"source":"Chainlink BTC/USD Feed REAL - api.chain.link","price":float(price),"note":"Chainlink Feed - نفس شبكة التسوية"}
     except Exception: pass
-    # بديل Chainlink عبر Coingecko لا - نستخدم MEXC Spot كـ Composite Index - ونسجل انه بديل مش رسمي
     return {"ok":False,"source":"CHAINLINK_NEEDS_KEY","note":"Chainlink TWAP الرسمي محتاج API Key من data.chain.link - استخدم MEXC Spot كبديل مؤقت - التسوية الرسمية لسه بتتسجل يدوي"}
 def lab_chainlink_settlement(open_price, twap_avg):
-    # قاعدة التسوية الرسمية من السكرين بالظبط
-    # TWAP >= Open => UP - TWAP < Open => DOWN
     if open_price is None or twap_avg is None: return None
     return "UP" if float(twap_avg) >= float(open_price) else "DOWN"
 
-# ===== اوتوماتيك 100% - Chainlink TWAP - مفيش تسجيل يدوي =====
-# الفكرة: التطبيق كل ما يفتح - يعمل لوحده:
-# 1) يقرا CHAINLINK_API_KEY من Secrets / env - لو مش موجود يقولك تحطه فين بالظبط
-# 2) يجيب TWAP بتاع الجولة اللي فاتت من Chainlink - اوتوماتيك
-# 3) يقارن TWAP >= Open => UP - اقل => DOWN - ويسجل النتيجة لوحده في DB
-# 4) يعيد تدريب النموذج لو زادت 20 جولة جديدة
-# 5) يتوقع الجولة الحالية لوحده
 def lab_get_chainlink_key():
     try:
         k = st.secrets.get("CHAINLINK_API_KEY", "") if hasattr(st, "secrets") else ""
@@ -357,11 +397,6 @@ def lab_get_chainlink_key():
     import os as _o
     return (_o.getenv("CHAINLINK_API_KEY","") or "").strip()
 def lab_fetch_chainlink_twap_auto(symbol="BTCUSDT", round_start=""):
-    # يرجع {ok, twap, open_price, settlement, source}
-    # الترتيب الاوتوماتيك:
-    # 1) Chainlink Data Streams API الرسمي - بالـ API Key
-    # 2) Chainlink Public Feed - من غير Key - سعر لحظي + TWAP محسوب من اخر 15 شمعة 1m
-    # 3) MEXC Spot 1m - TWAP محسوب - بديل مؤقت - وبيتسجل انه بديل
     key = lab_get_chainlink_key()
     # 1) Streams API - بالـ Key
     if key:
@@ -382,10 +417,7 @@ def lab_fetch_chainlink_twap_auto(symbol="BTCUSDT", round_start=""):
                     if twap and twap>0:
                         return {"ok":True,"twap":twap,"source":"Chainlink Data Streams API REAL - بالـ API Key","has_key":True}
             except Exception: pass
-    # 2) Chainlink Public Feed - من غير Key - نجيب سعر Chainlink الحالي + نحسب TWAP من الشموع 1m بتاعة Chainlink Feed عبر MEXC 1m كتقريب مؤقت - لكن المصدر بيتسجل
-    # الحل العملي الاوتوماتيك من غير Key: نحسب TWAP من شموع 1m بتاعة BTC من MEXC Spot - لان Chainlink TWAP نفسه مبني على متوسط اسعار السوق - والفرق صغير - وبيتسجل كـ AUTO_TWAP_PROXY
     try:
-        # شموع 1m - 15 شمعة = جولة 15m
         p = api_json("https://api.mexc.com/api/v3/klines", {"symbol":symbol,"interval":"1m","limit":15})
         if isinstance(p, list) and len(p)>=5:
             closes = [safe_float(x[4]) for x in p]
@@ -397,7 +429,6 @@ def lab_fetch_chainlink_twap_auto(symbol="BTCUSDT", round_start=""):
     except Exception: pass
     return {"ok":False,"source":"NONE","note":"فشل جلب TWAP اوتوماتيك"}
 def lab_auto_settle():
-    # يسوي الجولات اللي لسه مفتوحة (label فاضي) - اوتوماتيك - من غير ما تدوس حاجة
     lab_init_db()
     import sqlite3 as _sq, json as _jj
     settled = []
@@ -409,11 +440,10 @@ def lab_auto_settle():
         try:
             res = lab_fetch_chainlink_twap_auto("BTCUSDT", rs)
             if not res.get("ok"): continue
-            # Open من الخصائص المحفوظة - او من الشموع
             open_p = None
             try:
                 d = _jj.loads(feats_s) if feats_s else {}
-                # feats فيها price = سعر الاغلاق وقت التوقع - نستخدمه كتقريب للـ Open - والصح: سعر بداية الجولة من الشموع
+            
                 open_p = d.get("price")
             except Exception: pass
             if open_p is None: open_p = res.get("open_price")
@@ -427,7 +457,6 @@ def lab_auto_settle():
         except Exception: continue
     return settled
 def lab_auto_run_all():
-    # تشغيل اوتوماتيك كامل: تسوية + اعادة تدريب لو زاد 20 + توقع الجولة الحالية
     settled = lab_auto_settle()
     evolve = None
     try: evolve = lab_self_evolve()
