@@ -1,6 +1,4 @@
-# BLY7H ULTIMATE V19 + MEXC Learner + V20 LAB + SCAN ALL + MODERATE PREDICTION LAB - كامل - لا ينقص حاجه
-# القاعدة الوحيدة اللي اتعدلت: TP/SL بناء على السعر اللحظي والتحليل الاحترافي والادوات - مش ارقام عشوائية
-# الدخول = السعر اللحظي - الاستوب = نقطة اللاعودة بالظبط - TPs من الستركشر
+# BLY7H ULTIMATE  + MEXC Learner 
 import os, json, time, sqlite3, hashlib, math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
