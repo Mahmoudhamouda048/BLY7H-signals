@@ -586,6 +586,71 @@ def lab_backtest_1000():
             continue
     return {"ok":True,"saved":saved,"up":ups,"down":saved-ups,"up_rate":round(ups/saved*100,1) if saved else 0,"note":"Labels هي PROXY من اغلاق الشمعة - مش التسوية الرسمية. النموذج هيتعلم النمط العام، وبعدين يتصحح بالنتائج الرسمية اللي بتسجلها يدوي."}
 
+
+def lab_auto_learn():
+    # يشتغل لوحده اول ما التطبيق يفتح - لو مفيش ذاكرة - يجيب 1000 جولة ويتعلم منها لوحده
+    # من غير ما تدوس اي زرار
+    import sqlite3, os
+    lab_init_db()
+    try:
+        with sqlite3.connect(LAB_DB) as _c:
+            n = _c.execute("SELECT COUNT(*) FROM lab_features WHERE label IN ('UP','DOWN')").fetchone()[0]
+            has_model = _c.execute("SELECT COUNT(*) FROM lab_models").fetchone()[0]
+    except: n=0; has_model=0
+    if n < 100:
+        # ذاكرة فاضية - علمه من 1000 جولة فاتت لوحده
+        res = lab_backtest_1000()
+        if res.get("ok"):
+            train = lab_train_model()
+            return {"auto":True,"backtest":res,"train":train}
+        return {"auto":True,"backtest":res,"train":{"ok":False}}
+    # ذاكرة موجودة - شوف هل فيه جولات جديدة محتاجة اعادة تدريب؟
+    return lab_self_evolve()
+
+def lab_self_evolve():
+    # التطور الذاتي: كل ما تيجي 20 جولة جديدة رسمية - يعيد التدريب ويقارن الجديد بالقديم ويحتفظ بالافضل
+    import sqlite3, json as _jj
+    lab_init_db()
+    with sqlite3.connect(LAB_DB) as _c:
+        total = _c.execute("SELECT COUNT(*) FROM lab_features WHERE label IN ('UP','DOWN')").fetchone()[0]
+        models = _c.execute("SELECT version,test_acc FROM lab_models ORDER BY created_at DESC LIMIT 1").fetchall()
+    old_acc = models[0][1] if models else 0
+    # لو العدد زاد عن اخر تدريب بـ 20 - درب تاني
+    # نعرف اخر تدريب كان على كام جولة من جدول lab_models
+    with sqlite3.connect(LAB_DB) as _c:
+        last = _c.execute("SELECT train_n FROM lab_models ORDER BY created_at DESC LIMIT 1").fetchall()
+    last_n = last[0][0] if last else 0
+    if total - last_n >= 20:
+        new = lab_train_model()
+        if new.get("ok"):
+            # قارن الجديد بالقديم - احتفظ بالافضل
+            if new.get("test_acc",0) < old_acc*100:
+                # الجديد اوحش - رجع القديم كـ Active
+                with sqlite3.connect(LAB_DB) as _c:
+                    _c.execute("UPDATE lab_models SET is_active=0 WHERE version=?", (new.get("version"),))
+                    if models: _c.execute("UPDATE lab_models SET is_active=1 WHERE version=?", (models[0][0],))
+                    _c.commit()
+                return {"evolved":False,"reason":f"النموذج الجديد {new.get('test_acc')}% اوحش من القديم {old_acc*100:.1f}% - احتفظنا بالقديم","total":total}
+            return {"evolved":True,"new_acc":new.get("test_acc"),"old_acc":old_acc*100,"total":total}
+    return {"evolved":False,"reason":f"لسه بدري - عندك {total} جولة - اخر تدريب كان على {last_n} - استنى لما يزيدوا 20","total":total}
+
+def lab_get_price_no_key(symbol="BTCUSDT"):
+    # يجيب السعر من غير API Key ومن غير تسجيل - 3 مصادر مجانية - لو واحد وقع التاني يشتغل
+    # 1) MEXC Public - من غير مفتاح
+    # 2) Binance Public - من غير مفتاح
+    # 3) CoinGecko Public - من غير مفتاح
+    p = api_json("https://api.mexc.com/api/v3/ticker/price", {"symbol": symbol})
+    if isinstance(p, dict) and p.get("price"):
+        return {"price": float(p["price"]), "source": "MEXC Public - من غير API Key"}
+    p2 = api_json("https://api.binance.com/api/v3/ticker/price", {"symbol": symbol})
+    if isinstance(p2, dict) and p2.get("price"):
+        return {"price": float(p2["price"]), "source": "Binance Public - من غير API Key - بديل"}
+    # CoinGecko
+    cg = api_json("https://api.coingecko.com/api/v3/simple/price", {"ids":"bitcoin","vs_currencies":"usd"})
+    if isinstance(cg, dict) and cg.get("bitcoin",{}).get("usd"):
+        return {"price": float(cg["bitcoin"]["usd"]), "source": "CoinGecko Public - من غير API Key - بديل"}
+    return {"price": None, "source": "كل المصادر فشلت - جرب تاني"}
+
 def lab_backfill_features(round_start_str):
     # يجيب شموع MEXC لحد وقت الجولة ويحسب الخصائص بتاعتها - عشان الجولات الفاتت تتعلم منها بجد
     # round_start_str = "2026-11-07 06:45"
@@ -709,6 +774,12 @@ def lab_risk(pred, prob, price, atr):
 
 
 lab_init_db()
+# Auto-learn on startup - يتعلم من 1000 جولة لوحده من غير زرار
+try:
+    _auto = lab_auto_learn()
+    print('AUTO-LEARN:', _auto)
+except Exception as _e:
+    print('AUTO-LEARN FAIL:', _e)
 init_db()
 with st.sidebar:
     st.markdown("## 🎛️ إعدادات الماسح")
@@ -1022,6 +1093,12 @@ elif section == "🧪 MEXC PREDICTION LAB - V20":
             st.write("**ارتباط:**", lab_correlation())
             st.write("**مزامنة:**", lab_sync_check())
     with tab3:
+        # حالة التعلم التلقائي
+        try:
+            _st = lab_self_evolve()
+            st.success(f"🤖 التعلم التلقائي شغال - عندك {_st.get('total',0)} جولة متعلمة - {_st.get('reason','')}") if not _st.get("evolved") else st.success(f"🤖 تطور لوحده! دقة جديدة {_st.get('new_acc')}% بدل {_st.get('old_acc')}%")
+        except Exception as _e:
+            st.caption(f"التعلم التلقائي: {_e}")
         st.write("**دورة التعلم:** جمع -> خصائص -> تدريب RandomForest (Time Split 80/20 - لا تسرب مستقبل) -> اختبار -> مقارنة -> اعتماد الافضل")
         st.markdown("### 📚 تعلم من 1000 جولة فاتت - Backtest")
         st.caption("هيجيب 1000 شمعة 15m من MEXC = 1000 جولة فاتت = 10 ايام. هيحسب لكل جولة RSI / MACD / EMA / Volume / شموع - من الشموع اللي قبلها بس. وبعدين هيدرب النموذج عليها.")
