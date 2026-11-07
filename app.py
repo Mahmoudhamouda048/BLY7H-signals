@@ -1,4 +1,4 @@
-# BLY7H ULTIMATE  + MEXC Learner 
+# BLY7H ULTIMATE
 import os, json, time, sqlite3, hashlib, math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -177,8 +177,8 @@ def analyze(frame, symbol, settings):
         cvd_proxy=candle_volume_delta_proxy(frame)
         if abs(cvd_proxy)<3: return None,f"ضغط الشموع ضعيف: {cvd_proxy:.1f}%"
         side="LONG" if cvd_proxy>0 else "SHORT"
-        if side=="LONG" and not settings["want_long"]: return None,"LONG غير مفعّل"
-        if side=="SHORT" and not settings["want_short"]: return None,"SHORT غير مفعّل"
+        # النظام هو اللي بيقرر - مفيش حظر يدوي
+        # النظام هو اللي بيقرر SHORT لوحده
         btc_change=get_btc_change() if settings["btc_filter"] else None
         if settings["btc_filter"] and btc_change is not None:
             if side=="LONG" and btc_change<-2: return None,f"فلتر BTC: هبوط {btc_change:.2f}%"
@@ -691,6 +691,78 @@ def scan_all_coins(platform, direction, min_score, max_coins):
     prog.empty(); status.empty()
     return sorted(results, key=lambda x: x["score"], reverse=True)
 
+
+# ===== Early Move Detector - يكشف العملة قبل الانطلاق - مش بعد ما تطلع =====
+
+# ===== سوق التوقعات - هو اللي يكتشف العملة والحركه لوحده - انت متختارش حاجة =====
+# MEXC Prediction بيشتغل على BTC اساسا - وبعدين ETH / SOL - فالمحرك بيفحصهم كلهم لوحده
+# وبيقولك: العملة دي UP - والعملة دي DOWN - من غير ما تختار
+PREDICTION_COINS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT"]
+def lab_auto_detect_prediction_coin():
+    # بيفحص عملات سوق التوقعات كلها لوحده - بمنطق Early - ويرتبهم
+    out = []
+    for sym in PREDICTION_COINS:
+        try:
+            fr = lab_get_klines(sym, "15m", 100)
+            if fr is None: continue
+            r = early_move_analyze(fr, sym)
+            if r and not r.get("rejected"):
+                # تحويل لـ Prediction: UP لو PUMP اعلى - DOWN لو DUMP اعلى
+                if r["early_pump"] >= r["early_dump"] and r["early_pump"]>=40:
+                    out.append({"symbol":sym,"pred":"UP","score":r["early_pump"],"price":r["price"],"dir15":r["dir15"],"quality":r["quality"],"reasons":r["pump_reasons"],"cvd":r["cvd"]})
+                elif r["early_dump"]>r["early_pump"] and r["early_dump"]>=40:
+                    out.append({"symbol":sym,"pred":"DOWN","score":r["early_dump"],"price":r["price"],"dir15":r["dir15"],"quality":r["quality"],"reasons":r["dump_reasons"],"cvd":r["cvd"]})
+        except Exception: continue
+    out = sorted(out, key=lambda x: x["score"], reverse=True)
+    return out
+
+def early_move_analyze(frame, symbol):
+    try:
+        if frame is None or len(frame) < 50: return None
+        closes = frame["close"]; vols = frame["vol"]
+        last = float(closes.iloc[-1]); prev = float(closes.iloc[-2])
+        ch_1h = (last - prev)/prev*100 if prev else 0
+        if abs(ch_1h) > 3: return {"symbol":symbol,"rejected":True,"reason":f"طار خلاص {ch_1h:.2f}% - مش Early"}
+        ma20 = closes.tail(20).mean(); sd20 = closes.tail(20).std()
+        bb_width = (2*sd20)/ma20*100 if ma20 else 99
+        squeeze = bb_width < 1.2
+        v_last3 = vols.tail(3).mean(); v_prev10 = vols.iloc[-13:-3].mean()
+        vol_build = v_last3 / v_prev10 if v_prev10>0 else 1
+        vol_building = vol_build > 1.3
+        cvd = candle_volume_delta_proxy(frame, lookback=20)
+        hi50 = float(frame["high"].tail(50).max()); lo50 = float(frame["low"].tail(50).min())
+        pos50 = (last-lo50)/(hi50-lo50)*100 if hi50!=lo50 else 50
+        rsi_v = mexc_rsi(closes.tail(15))
+        rsi_ready = 35 <= rsi_v <= 65
+        bodies = [abs(float(frame["close"].iloc[i])-float(frame["open"].iloc[i]))/float(frame["close"].iloc[i])*100 for i in range(len(frame)-5, len(frame))]
+        avg_body = sum(bodies)/len(bodies) if bodies else 1
+        quiet = avg_body < 0.4
+        pump = 0; pump_reasons=[]
+        if squeeze: pump+=25; pump_reasons.append("انضغاط Bollinger - انفجار قرب")
+        if vol_building and cvd>5: pump+=25; pump_reasons.append(f"حجم بيبني x{vol_build:.2f} + CVD شراء +{cvd:.1f}%")
+        elif vol_building: pump+=10; pump_reasons.append(f"حجم بيبني x{vol_build:.2f}")
+        if pos50 < 30: pump+=15; pump_reasons.append(f"عند القاع {pos50:.0f}% - مكان تجميع")
+        if rsi_ready and cvd>0: pump+=10; pump_reasons.append("RSI محايد + ضغط شراء")
+        if quiet: pump+=10; pump_reasons.append("شموع هادية - تردد قبل الانطلاق")
+        if 0 < ch_1h < 1.5: pump+=5; pump_reasons.append("بداية تحرك خفيف لفوق")
+        dump = 0; dump_reasons=[]
+        if squeeze: dump+=25; dump_reasons.append("انضغاط Bollinger - انفجار قرب")
+        if vol_building and cvd<-5: dump+=25; dump_reasons.append(f"حجم بيبني x{vol_build:.2f} + CVD بيع {cvd:.1f}%")
+        elif vol_building: dump+=10; dump_reasons.append(f"حجم بيبني x{vol_build:.2f}")
+        if pos50 > 70: dump+=15; dump_reasons.append(f"عند القمة {pos50:.0f}% - مكان تصريف")
+        if rsi_ready and cvd<0: dump+=10; dump_reasons.append("RSI محايد + ضغط بيع")
+        if quiet: dump+=10; dump_reasons.append("شموع هادية - تردد قبل الانطلاق")
+        if -1.5 < ch_1h < 0: dump+=5; dump_reasons.append("بداية تحرك خفيف لتحت")
+        if cvd > 10 and pos50 < 60: dir15="UP"; dir_conf=min(85, 55+abs(cvd)*0.8)
+        elif cvd < -10 and pos50 > 40: dir15="DOWN"; dir_conf=min(85, 55+abs(cvd)*0.8)
+        elif cvd > 3: dir15="UP"; dir_conf=55
+        elif cvd < -3: dir15="DOWN"; dir_conf=55
+        else: dir15="SIDEWAYS"; dir_conf=50
+        best = max(pump, dump)
+        quality = "ممتازة 🔥" if best>=70 else ("جيدة ✅" if best>=55 else ("متوسطة ⚠️" if best>=40 else "ضعيفة"))
+        return {"symbol":symbol,"rejected":False,"price":round(last,8),"ch_1h":round(ch_1h,2),"bb_width":round(bb_width,2),"vol_build":round(vol_build,2),"cvd":round(cvd,1),"pos50":round(pos50,1),"rsi":round(rsi_v,1),"early_pump":pump,"early_dump":dump,"pump_reasons":pump_reasons,"dump_reasons":dump_reasons,"dir15":dir15,"dir_conf":round(dir_conf,1),"quality":quality,"quality_score":best,"squeeze":squeeze,"vol_building":vol_building}
+    except Exception: return None
+
 lab_init_db()
 try: _auto=lab_auto_learn()
 except Exception: pass
@@ -699,7 +771,8 @@ init_db()
 with st.sidebar:
     st.markdown("## 🎛️ إعدادات الماسح")
     platform = st.selectbox("المنصة", ["KUCOIN","BINANCE"])
-    want_long = st.checkbox("🚀 LONG", value=True); want_short = st.checkbox("📉 SHORT", value=True)
+    st.caption("اتجاه الصفقة: النظام هو اللي بيقرر LONG ولا SHORT لوحده - انت متختارش")
+    want_long = True; want_short = True
     use_fvg = st.checkbox("FVG", value=False); btc_filter = st.checkbox("فلتر اتجاه BTC", value=True)
     funding_filter = st.checkbox("فلتر Funding (Binance Futures)", value=False); wall_filter = st.checkbox("دفتر أوامر Binance", value=False)
     killzone = st.checkbox("عرض نوافذ السيولة التقريبية", value=True); confirm_exchanges = st.checkbox("فحص توافر الرمز على 5 منصات Spot", value=False)
@@ -902,7 +975,8 @@ elif section=="🔍 SCAN ALL - فحص كل العملات":
     st.caption("بيفحص كل العملات - مش عملة واحدة - بنفس منطق TP/SL الجديد: دخول لحظي - استوب = نقطة اللاعودة - اهداف من الستركشر")
     cA,cB,cC,cD=st.columns(4)
     with cA: scan_plat=st.selectbox("المنصة", ["BINANCE","KUCOIN"], key="scan_plat")
-    with cB: scan_dir=st.selectbox("الاتجاه", ["LONG","SHORT"], key="scan_dir")
+    with cB: st.caption("الاتجاه: النظام هو اللي بيقرر LONG ولا SHORT لوحده")
+    scan_dir="AUTO"
     with cC: scan_min=st.slider("اقل Score", 50, 85, 70, key="scan_min")
     with cD: scan_num=st.slider("عدد العملات", 20, 80, 50, key="scan_num")
     if st.button("🔍 افحص كل العملات دلوقتي", use_container_width=True, type="primary"):
@@ -922,8 +996,16 @@ elif section=="🎯 PREDICTION LAB المعتدل - سوق التوقعات":
     st.markdown("**المعتدل = لا تدخل الا لو 3 شروط مع بعض - مش شرط واحد: Score >=70 + FVG موجود + CVD مؤكد - لو شرط ناقص = NO_TRADE**")
     st.markdown("**قاعدة التسوية الرسمية (Chainlink):** TWAP بتاع Chainlink خلال الجولة >= سعر الافتتاح = UP - اقل = DOWN - الرابط: https://data.chain.link/streams/btc-usd-twap-60s-streams")
     lab_sym=st.text_input("العملة", "BTCUSDT", key="mod_sym").strip().upper()
-    lab_dir_mod=st.selectbox("الاتجاه", ["PUMP - صعود","DUMP - هبوط"], key="mod_dir")
-    lab_direction_mod="PUMP" if "PUMP" in lab_dir_mod else "DUMP"
+    st.caption("الاتجاه: النظام هو اللي بيقرر PUMP ولا DUMP لوحده - انت متختارش")
+    lab_dir_mod = "AUTO"  # النظام بيقرر
+    # النظام هو اللي بيقرر PUMP ولا DUMP لوحده - من تحليل BTC الحالي - مش من اختيارك
+    try:
+        _fmod = lab_get_klines("BTCUSDT","15m",100)
+        _rmod = early_move_analyze(_fmod, "BTCUSDT") if _fmod is not None else None
+        lab_direction_mod = "PUMP" if (_rmod and _rmod.get("early_pump",0) >= _rmod.get("early_dump",0)) else "DUMP"
+        st.info(f"🤖 النظام قرر لوحده: {lab_direction_mod} - PUMP سكور {_rmod.get('early_pump',0) if _rmod else '-'} / DUMP سكور {_rmod.get('early_dump',0) if _rmod else '-'} - انت مخترتش حاجة")
+    except Exception:
+        lab_direction_mod="PUMP"
     if st.button("🔍 توقع الجولة الحالية - المعتدل", key="mod_btn", use_container_width=True, type="primary"):
         live=None; src="NONE"
         try:
@@ -951,7 +1033,7 @@ elif section=="🎯 PREDICTION LAB المعتدل - سوق التوقعات":
             else:
                 # تحليل معتدل باستخدام نفس منطق analyze - نحول الشموع لنفس صيغة frame
                 # frame هنا 15m - نستخدم analyze مع اعدادات معتدلة
-                _set={"want_long": lab_direction_mod=="PUMP","want_short": lab_direction_mod=="DUMP","use_fvg":False,"btc_filter":False,"funding_filter":False,"wall_filter":False,"killzone":True,"confirm_exchanges":False,"min_score":0}
+                _set={"want_long": True,"want_short": True,"use_fvg":False,"btc_filter":False,"funding_filter":False,"wall_filter":False,"killzone":True,"confirm_exchanges":False,"min_score":0}
                 sig,reason=analyze(fmod, lab_sym, _set)
                 if sig is None: st.warning(f"لا توجد اشارة - {reason}")
                 else:
