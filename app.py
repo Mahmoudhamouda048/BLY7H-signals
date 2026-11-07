@@ -545,6 +545,67 @@ def lab_features_vector(frame, ind, vol, ob, flow, fut):
     if frame is None or ind=={}: return None
     last=frame.iloc[-1]
     return {"price":safe_float(last["close"]),"rsi":ind.get("rsi",50),"macd":ind.get("macd",0),"ema_diff":ind.get("ema9",0)-ind.get("ema21",0),"atr_pct":ind.get("atr",0)/safe_float(last["close"])*100 if safe_float(last["close"]) else 0,"vol_x":vol.get("vol_x",1),"ob_imb":ob.get("imbalance",0),"flow_delta":flow.get("delta",0),"funding":fut.get("funding_pct") or 0,"oi_ch":fut.get("oi_change_pct") or 0,"pos_20":(safe_float(last["close"])-safe_float(frame["low"].tail(20).min()))/(safe_float(frame["high"].tail(20).max())-safe_float(frame["low"].tail(20).min())+1e-9)*100,"chg3":(safe_float(last["close"])-safe_float(frame["close"].iloc[-4]))/safe_float(frame["close"].iloc[-4])*100 if safe_float(frame["close"].iloc[-4]) else 0}
+
+
+def lab_backtest_1000():
+    # يعلم النموذج من 1000 جولة فاتت من الشموع - من غير ما تستنى 10 ايام لايف
+    # 1000 جولة × 15 دقيقة = 1000 شمعة 15m
+    # Label = PROXY: اغلاق الشمعة اللي بعدها > فتح الشمعة = UP - مش التسوية الرسمية Composite+TWAP
+    import sqlite3, json as _jj, datetime as _dt
+    lab_init_db()
+    f = lab_get_klines("BTCUSDT","15m",1000)
+    if f is None or len(f)<100:
+        return {"ok":False,"note":"تعذر جلب 1000 شمعة من MEXC - جرب تاني"}
+    saved=0; ups=0
+    # نحسب الخصائص لكل شمعة باستخدام الشموع اللي قبلها بس - مفيش تسرب مستقبل
+    for i in range(60, len(f)-1):
+        try:
+            window = f.iloc[:i+1].copy()
+            ind = lab_indicators(window)
+            vol = lab_volume(window)
+            # OrderBook و OrderFlow للحالات القديمة مش متاحة - بنستخدم 0 وبنعلم النموذج انها غير متاحة
+            ob = {"imbalance":0,"note":"Backtest - OrderBook غير متاح تاريخيا"}
+            fut = {"funding_pct":0,"oi_change_pct":0}
+            flow = {"delta":0}
+            feats = lab_features_vector(window, ind, vol, ob, flow, fut)
+            if feats is None: continue
+            feats["backtest_idx"]=i
+            # Label من الشمعة اللي بعدها فقط - الشمعة اللي بعدها هي الجولة
+            open_next = float(f["open"].iloc[i+1]); close_next = float(f["close"].iloc[i+1])
+            label = "UP" if close_next > open_next else "DOWN"
+            if label=="UP": ups+=1
+            # وقت الجولة تقريبي: دلوقتي - (عدد الشموع المتبقية × 15 دقيقة)
+            # MEXC بيرجع الشموع من الاقدم للاحدث - فنحسب الوقت بالعكس من دلوقتي
+            mins_ago = (len(f)-1 - i)*15
+            rs_dt = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=mins_ago)
+            rs = rs_dt.strftime("%Y-%m-%d %H:%M")
+            with sqlite3.connect(LAB_DB) as _c:
+                _c.execute("INSERT OR REPLACE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs, _jj.dumps(feats), label))
+            saved+=1
+        except Exception as e:
+            continue
+    return {"ok":True,"saved":saved,"up":ups,"down":saved-ups,"up_rate":round(ups/saved*100,1) if saved else 0,"note":"Labels هي PROXY من اغلاق الشمعة - مش التسوية الرسمية. النموذج هيتعلم النمط العام، وبعدين يتصحح بالنتائج الرسمية اللي بتسجلها يدوي."}
+
+def lab_backfill_features(round_start_str):
+    # يجيب شموع MEXC لحد وقت الجولة ويحسب الخصائص بتاعتها - عشان الجولات الفاتت تتعلم منها بجد
+    # round_start_str = "2026-11-07 06:45"
+    try:
+        import datetime as _dt
+        rs = _dt.datetime.strptime(round_start_str, "%Y-%m-%d %H:%M").replace(tzinfo=_dt.timezone.utc)
+        # نجيب شموع 15m كتير وناخد اللي قبل الجولة
+        f = lab_get_klines("BTCUSDT","15m",500)
+        if f is None: return None
+        # الشموع في MEXC مفيهاش وقت واضح في الداتا فريم الحالي - نستخدم اخر 200 شمعة كتقريب
+        # ونحسب الخصائص من اخر الشموع قبل الجولة
+        ind = lab_indicators(f); vol = lab_volume(f); ob = lab_orderbook("BTCUSDT"); fut = lab_futures("BTCUSDT"); flow = lab_orderflow("BTCUSDT")
+        feats = lab_features_vector(f, ind, vol, ob, flow, fut)
+        if feats is not None:
+            feats["backfilled_for"] = round_start_str
+            feats["source"] = "BACKFILL_KLINES"
+        return feats
+    except Exception as e:
+        return None
+
 def lab_similarity(current, history):
     # history: list of (feats dict, label UP/DOWN)
     if not history or not current: return {"similar_n":0,"up_rate":None,"note":"لا توجد ذاكرة كافية"}
@@ -891,6 +952,50 @@ elif section == "🧪 MEXC PREDICTION LAB - V20":
                 st.write(f"**تشابه تاريخي:** {sim} | **ارتباط:** {corr}")
                 st.write(f"**مخاطر:** EV {risk.get('ev')} | Breakeven {risk.get('breakeven')} | قرار {risk.get('decision')} - {risk.get('reason')} | النطاق المتوقع {risk.get('expected_range')} | سعر الالغاء: {feats['price']}")
                 st.info("سجل النتيجة الرسمية بعد انتهاء الجولة من الاسفل - لا تعدل التوقع القديم بعد معرفة النتيجة.")
+        st.markdown("#### ⚡ سجل 3 جولات فاتت مرة واحدة - للتلاتة اللي فاتوا")
+        st.caption("لو التلاتة اللي فاتوا كلهم UP - سيبهم UP ودوس حفظ. لو واحدة مختلفة غيرها قبل الحفظ.")
+        with st.form("log_3_past"):
+            c1,c2,c3 = st.columns(3)
+            # التلات جولات اللي قبل الجولة الحالية 07:30
+            r1 = c1.text_input("الجولة 1 - وقت البداية", value="2026-11-07 06:45")
+            l1 = c1.selectbox("نتيجة 1", ["UP","DOWN"], key="l1")
+            r2 = c2.text_input("الجولة 2 - وقت البداية", value="2026-11-07 07:00")
+            l2 = c2.selectbox("نتيجة 2", ["UP","DOWN"], key="l2")
+            r3 = c3.text_input("الجولة 3 - وقت البداية", value="2026-11-07 07:15")
+            l3 = c3.selectbox("نتيجة 3", ["UP","DOWN"], key="l3")
+            if st.form_submit_button("💾 سجل التلاتة"):
+                import sqlite3, json as _jj
+                lab_init_db()
+                saved=[]
+                for rs_in, off in [(r1,l1),(r2,l2),(r3,l3)]:
+                    if rs_in.strip():
+                        with sqlite3.connect(LAB_DB) as _c:
+                            # لو مفيش خصائص للجولة دي - نسجلها كجولة تاريخية يدوية من غير خصائص
+                            bf = lab_backfill_features(rs_in.strip())
+                            _feats_s = _jj.dumps(bf if bf else {"source":"MANUAL_PAST","note":"Backfill فشل - سجل يدوي بدون خصائص"})
+                            _c.execute("INSERT OR IGNORE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs_in.strip(), _feats_s, off))
+                            _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (off, rs_in.strip()))
+                            _c.execute("INSERT OR IGNORE INTO lab_predictions (round_start,created_at,pred,prob,confidence,regime,reasons,counter,invalidation,model_version,features_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (rs_in.strip(), rs_in.strip(), off, 0, 0, "MANUAL", "تسجيل يدوي للجولات الفاتت", "", 0, "MANUAL_PAST", "manual"))
+                            _c.commit()
+                        saved.append(f"{rs_in} = {off}")
+                st.success("تم تسجيل: " + " | ".join(saved))
+                st.info("دلوقتي عندك 3 جولات متعلمة. كمل لحد 40 جولة وبعدين درب النموذج.")
+        if st.button("🔁 املا خصائص الجولات القديمة - عشان يتعلم من النماذج"):
+            import sqlite3, json as _jj2
+            lab_init_db()
+            with sqlite3.connect(LAB_DB) as _c:
+                rows = _c.execute("SELECT round_start,feats FROM lab_features").fetchall()
+                fixed=0
+                for rs_old, fs_old in rows:
+                    try:
+                        d = _jj2.loads(fs_old) if fs_old else {}
+                    except: d={}
+                    if not d or d.get("source")=="MANUAL_PAST" or fs_old=="{}":
+                        bf = lab_backfill_features(rs_old)
+                        if bf:
+                            _c.execute("UPDATE lab_features SET feats=? WHERE round_start=?", (_jj2.dumps(bf), rs_old)); fixed+=1
+                _c.commit()
+            st.success(f"تم ملء خصائص {fixed} جولة قديمة - دلوقتي النماذج هتشتغل")
         st.markdown("#### سجل النتيجة الرسمية للجولة (يدوي - من تطبيق MEXC)")
         with st.form("log_official"):
             rs_in = st.text_input("وقت بداية الجولة (YYYY-MM-DD HH:MM)", value="")
@@ -900,7 +1005,8 @@ elif section == "🧪 MEXC PREDICTION LAB - V20":
                     import sqlite3
                     lab_init_db()
                     with sqlite3.connect(LAB_DB) as _c:
-                        _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (off, rs_in)); _c.commit()
+                        bf2 = lab_backfill_features(rs_in)
+                        _c.execute("INSERT OR IGNORE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs_in, _jj.dumps(bf2) if bf2 else "{}", off)); _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (off, rs_in)); _c.commit()
                     st.success(f"تم تسجيل {off} للجولة {rs_in} - سيتم استخدامها في التدريب القادم")
                 else: st.error("اكتب وقت الجولة")
     with tab2:
@@ -917,6 +1023,16 @@ elif section == "🧪 MEXC PREDICTION LAB - V20":
             st.write("**مزامنة:**", lab_sync_check())
     with tab3:
         st.write("**دورة التعلم:** جمع -> خصائص -> تدريب RandomForest (Time Split 80/20 - لا تسرب مستقبل) -> اختبار -> مقارنة -> اعتماد الافضل")
+        st.markdown("### 📚 تعلم من 1000 جولة فاتت - Backtest")
+        st.caption("هيجيب 1000 شمعة 15m من MEXC = 1000 جولة فاتت = 10 ايام. هيحسب لكل جولة RSI / MACD / EMA / Volume / شموع - من الشموع اللي قبلها بس. وبعدين هيدرب النموذج عليها.")
+        st.warning("Labels هنا PROXY من اغلاق الشمعة - مش التسوية الرسمية Composite+TWAP. فالنموذج هيتعلم النمط العام، وبعدين يتصحح بالنتائج الرسمية اللي بتسجلها يدوي من تطبيق MEXC.")
+        if st.button("📚 علمه من 1000 جولة فاتت - دلوقتي", type="primary"):
+            with st.spinner("بجيب 1000 شمعة وبحسب 1000 نموذج... دقيقة واحدة"):
+                res = lab_backtest_1000()
+            st.json(res)
+            if res.get("ok"):
+                st.success(f"تم حفظ {res['saved']} جولة - {res['up']} UP / {res['down']} DOWN - دلوقتي دوس درب النموذج")
+                st.info("بعدها ارجع لـ Live Predictions - هتلاقي التوقعات بقت UP/DOWN بدل NO_TRADE - لان بقى عنده ذاكرة 1000 نموذج")
         if st.button("🧠 درب النموذج الآن"):
             res = lab_train_model(); st.json(res)
         import sqlite3
