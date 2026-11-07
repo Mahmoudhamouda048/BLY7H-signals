@@ -10,7 +10,31 @@ import pandas as pd
 import requests
 import streamlit as st
 st.set_page_config(page_title="BLY7H ULTIMATE V20", page_icon="💎", layout="wide", initial_sidebar_state="collapsed")
-APP_TITLE = "💎 BLY7H ULTIMATE V20 V6 - MEXC PREDICTION LAB - REAL SOURCE"
+
+# ===== BLY7H LOGO =====
+import os as _os
+import base64 as _b64
+def _bly7h_show_logo():
+    try:
+        _logo_path = None
+        for _p in ["bly7h_logo.jpg", "bly7h_logo.png", "logo.jpg", "assets/bly7h_logo.jpg"]:
+            if _os.path.exists(_p):
+                _logo_path = _p
+                break
+        if _logo_path:
+            _c1, _c2, _c3 = st.columns([1, 2, 1])
+            with _c2:
+                st.image(_logo_path, use_container_width=True)
+        else:
+            st.markdown("""<div style="text-align:center; padding:12px 0 4px 0;"><div style="font-size:42px; font-weight:900; letter-spacing:4px; background: linear-gradient(90deg,#FFD700,#FF8C00,#FFD700); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">BLY7H ELITE</div><div style="color:#FFD700; font-size:13px; letter-spacing:3px;">@WHYNOTBLY7 &nbsp;•&nbsp; PREDICT BEFORE THE MOVE</div></div>""", unsafe_allow_html=True)
+    except Exception:
+        pass
+try:
+    _bly7h_show_logo()
+except Exception:
+    pass
+
+APP_TITLE = "💎 BLY7H ULTIMATE V20 V7 - MEXC PREDICTION LAB"
 DB_PATH = "bly7h_signals.db"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "BLY7H-Scanner/19.0"})
@@ -702,7 +726,7 @@ def lab_get_price_no_key(symbol="BTCUSDT"):
     return {"price": None, "source": "كل المصادر فشلت - جرب تاني"}
 
 def lab_backfill_features(round_start_str):
-    # يجيب شموع MEXC لحد وقت الجولة ويحسب الخصائص بتاعتها - عشان الجولات الفاتت تتعلم منها بجد
+    # يجيب شموع MEXC لحد وقت الجولة ويحسب الخصائص بتاعتها - لـ الجولات الفاتت تتعلم منها بجد
     # round_start_str = "2026-11-07 06:45"
     try:
         import datetime as _dt
@@ -808,7 +832,7 @@ def lab_predict_ensemble(feats, patterns, vol, ob, flow, regime, sim, ml_prob=No
     if pred=="DOWN": counter.append("احتمال Short Squeeze")
     stage="CONFIRMED" if abs(ensemble_up-0.5)>0.2 and total>=4 else ("EARLY SETUP" if abs(ensemble_up-0.5)>0.1 else "WATCH")
     if pred=="NO_TRADE": stage="NO_TRADE"
-    # معايرة بسيطة: لا ندعي 85% بدون بيانات - نحدد الثقة من عدد الأصوات والتشابه
+    # معايرة بسيطة: لا يتم ادعاء 85% بدون بيانات - نحدد الثقة من عدد الأصوات والتشابه
     conf=round(min(85, max(50, abs(ensemble_up-0.5)*100 + total*3 + (10 if sim.get("similar_n",0)>=30 else 0))),1)
     return {"pred":pred,"prob":round(float(ensemble_up),3),"votes_up":votes_up,"votes_dn":votes_dn,"reasons":reasons,"counter":counter,"regime":regime,"stage":stage,"confidence":conf}
 
@@ -1004,7 +1028,7 @@ elif section == "🟢 MEXC Learner":
                 st.warning("⏸️ متدخلش - متدوسش حاجة")
             st.write(f"السبب: {reason}")
             st.write(f"الثقة: {conf}% | ويك: {mf['wick']} | شموع متتالية: {mf['streak']} | CVD: {mf['cvd']}")
-            st.caption("لعبة Guess على MEXC معمولة عشان المنصة تكسب على المدى الطويل - العب بـ 1 دولار بس.")
+            st.caption("لعبة Guess على MEXC معمولة لـ المنصة تكسب على المدى الطويل - العب بـ 1 دولار بس.")
     if st.button("🧪 باك تست MEXC - 200 شمعة"):
         mframe2 = get_mexc_klines_15m(200)
         if mframe2 is None:
@@ -1103,7 +1127,7 @@ elif section == "🧪 MEXC PREDICTION LAB - V20":
                         saved.append(f"{rs_in} = {off}")
                 st.success("تم تسجيل: " + " | ".join(saved))
                 st.info("دلوقتي عندك 3 جولات متعلمة. كمل لحد 40 جولة وبعدين درب النموذج.")
-        if st.button("🔁 املا خصائص الجولات القديمة - عشان يتعلم من النماذج"):
+        if st.button("🔁 املا خصائص الجولات القديمة - لـ يتعلم من النماذج"):
             import sqlite3, json as _jj2
             lab_init_db()
             with sqlite3.connect(LAB_DB) as _c:
@@ -1161,7 +1185,7 @@ elif section == "🧪 MEXC PREDICTION LAB - V20":
             st.json(res)
             if res.get("ok"):
                 st.success(f"تم حفظ {res['saved']} جولة - {res['up']} UP / {res['down']} DOWN - دلوقتي دوس درب النموذج")
-                st.info("بعدها ارجع لـ Live Predictions - هتلاقي التوقعات بقت UP/DOWN بدل NO_TRADE - لان بقى عنده ذاكرة 1000 نموذج")
+                st.info("بعدها ارجع لـ Live Predictions - يتم عرض التوقعات بقت UP/DOWN بدل NO_TRADE - لان بقى عنده ذاكرة 1000 نموذج")
         if st.button("🧠 درب النموذج الآن"):
             res = lab_train_model(); st.json(res)
         import sqlite3
@@ -1185,8 +1209,8 @@ elif section == "🧪 MEXC PREDICTION LAB - V20":
                     if lb=="UP": up_n+=1; up_c+=1 if mp[rs]=="UP" else 0
                     else: dn_n+=1; dn_c+=1 if mp[rs]=="DOWN" else 0
             st.write(f"**دقة التوقعات المعلمة:** {correct}/{len(feats_r)} = {correct/len(feats_r)*100:.1f}% | UP {up_c}/{up_n} | DOWN {dn_c}/{dn_n}")
-            st.caption("Brier / LogLoss / Calibration تظهر بعد التدريب في AI Learning Center - لا ندعي 85% بدون بيانات اختبار.")
+            st.caption("Brier / LogLoss / Calibration تظهر بعد التدريب في AI Learning Center - لا يتم ادعاء 85% بدون بيانات اختبار.")
         st.dataframe(preds, use_container_width=True) if preds else st.info("لا توجد توقعات بعد - حلل جولة من تبويب Live")
 
 st.markdown("---")
-st.caption("BLY7H V20 V6 + MEXC PREDICTION LAB - REAL SOURCE | البيانات قد تتأخر أو تفشل حسب واجهات المنصات. لا تنفّذ صفقة اعتمادًا على الإشارة وحدها.")
+st.caption("BLY7H V20 V7 - MEXC PREDICTION LAB | البيانات قد تتأخر أو تفشل حسب واجهات المنصات. لا تنفّذ صفقة اعتمادًا على الإشارة وحدها.")
