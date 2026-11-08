@@ -50,7 +50,7 @@ def killzone_status():
     cur=now_cairo(); mins=cur.hour*60+cur.minute
     if 10*60<=mins<=12*60: return True,"London 10:00-12:00 Cairo"
     if 15*60+30<=mins<=17*60+30: return True,"New York 15:30-17:30 Cairo"
-    return False,"خارج Killzone - "
+    return False,"خارج Killzone - بونص فقط، مش حظر"
 
 def init_db():
     with sqlite3.connect(DB_PATH) as c:
@@ -315,10 +315,11 @@ def backtest_simple(exchange, symbol, gran="1h", limit=500):
     return {"symbol":symbol,"timeframe":gran,"total":total,"win_rate":round(wr,1),"avg_rr":round(avg_rr,2),"train_len":len(train),"test_len":len(test)}
 
 st.markdown(f"**Killzone:** {'✅ '+killzone_status()[1] if killzone_status()[0] else '⏸️ '+killzone_status()[1]} | **البيانات:** Futures حقيقية من المنصة - Spot مفصول تمامًا | **آخر تحديث:** {now_cairo().strftime('%Y-%m-%d %H:%M:%S')} Cairo")
-section=st.sidebar.selectbox("القسم", ["🔍 Futures Scanner - KuCoin / MEXC / Bybit","📊 تحليل عملة - كل الفواصل","🎯 MEXC Prediction - UP/DOWN","📈 Options Analysis","⚽ Football Analysis","💾 Paper Trading + Backtest","📊 Performance Dashboard","🤖 MEXC Learner - بيعلم نفسه", "📩 Telegram Test"])
+st.markdown("<div style='border:1px solid #1E2530;background:#12161F;border-radius:14px;padding:12px;margin-top:14px'><div style='font-size:12px;font-weight:900;letter-spacing:0.2em;color:#FFD700;text-align:center'>الأقسام - اختار قسم</div></div>", unsafe_allow_html=True)
+section = st.radio("الأقسام", ["📡 Futures Scanner","📊 تحليل عملة","🎲 MEXC Prediction","📈 Options","⚽ Football","💾 Paper Trading","📊 Performance","🧠 MEXC Learner","📩 Telegram"], horizontal=True, label_visibility="collapsed")
 st.sidebar.markdown("---"); st.sidebar.markdown("**BLY7TRADER SIGNALS**"); st.sidebar.caption("TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID في Secrets")
 
-if section.startswith("🔍"):
+if section.startswith("📡"):
     st.subheader("🔍 Futures Scanner - KuCoin / MEXC / Bybit - فصل تام عن Spot")
     c1,c2,c3,c4=st.columns(4)
     with c1: exch=st.selectbox("المنصة", ["KuCoin","MEXC","Bybit"])
@@ -380,7 +381,7 @@ elif section.startswith("📊 تحليل"):
             e9=ema(df["close"],9); e21=ema(df["close"],21); rr=rsi_calc(df["close"]); mm,ss,hh=macd_calc(df["close"]); aa=atr_calc(df)
             st.markdown(f"**{gran}** — سعر `{float(df['close'].iloc[-1]):.8g}` | EMA9 `{float(e9.iloc[-1]):.8g}` | EMA21 `{float(e21.iloc[-1]):.8g}` | RSI `{float(rr.iloc[-1]):.1f}` | MACD Hist `{float(hh.iloc[-1]):.8g}` | ATR `{float(aa.iloc[-1]):.8g}` | Momentum `{float(momentum_calc(df['close']).iloc[-1]):.8g}` | FVG {len(detect_fvg(df))} | OB {detect_ob(df)} | BSL/SSL {detect_bsl_ssl(df)} | Sweep {detect_sweep(df)['dir']}")
 
-elif section.startswith("🎯"):
+elif section.startswith("🎲"):
     st.subheader("🎯 MEXC Prediction - UP / DOWN / NO_TRADE")
     chk=mexc_prediction_check("BTCUSDT")
     if chk["status"]=="CHAINLINK": st.success(chk["msg"])
@@ -396,7 +397,7 @@ elif section.startswith("🎯"):
             else: st.warning("⏸️ NO_TRADE - شرط ناقص - المعتدل لا يدخل ناقص")
 
 
-elif section.startswith("🤖"):
+elif section.startswith("🧠"):
     st.subheader("🤖 MEXC Learner - بيعلم نفسه بنفسه")
     st.markdown("### التعلم الذاتي")
     if st.button("🧠 علم البوت من 1000 جولة سابقة دلوقتي", type="primary", use_container_width=True):
