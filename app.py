@@ -17,14 +17,20 @@ STABLES = {"USDCUSDT","BUSDUSDT","DAIUSDT","FDUSDUSDT","USDEUSDT"}
 st.markdown("<div style='border:2px solid #FFD700;background:#0B0E14;padding:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)'>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V19 MODIFIED - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center;margin-top:12px'><span style='display:inline-block;background:#FFD700;color:#000;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:900'>SELF-LEARNING BOT - Learns from 1000 rounds</span> <span style='display:inline-block;background:#12161F;border:1px solid #1E2530;color:#E6E9EF;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700'>Monthly Rent $149 (Foreign $290) - Full Ownership $2499 (Foreign $4000)</span></div>", unsafe_allow_html=True)
-cA,cB,cC,cD = st.columns(4)
-tools_poster = [("📐","FVG","Fair Value Gap"),("🧱","Order Block","Whale Zone"),("📊","CVD Real","Buy vs Sell"),("📈","OI + Funding","Open Interest"),("📖","Order Book","Buy / Sell Walls"),("⏰","Killzone","London / NY"),("🧹","Sweep","Stop Hunt"),("📉","EMA 9/21","Trend"),("📊","RSI","Momentum"),("📈","MACD","Momentum"),("📏","ATR","Volatility"),("💎","BLY7TRADER","@WHYNOTBLY7")]
-for _r in range(3):
-    _cols = st.columns(4)
-    for _j in range(4):
-        _t = tools_poster[_r*4+_j]
-        with _cols[_j]: st.markdown(f"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>{_t[0]}</div><div style='font-size:11px;font-weight:800;color:#FFF'>{_t[1]}</div><div style='font-size:10px;color:#8A93A3'>{_t[2]}</div></div>", unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
+st.markdown("<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px'>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📐</div><div style='font-size:11px;font-weight:800;color:#FFF'>FVG</div><div style='font-size:10px;color:#8A93A3'>Fair Value Gap</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>🧱</div><div style='font-size:11px;font-weight:800;color:#FFF'>Order Block</div><div style='font-size:10px;color:#8A93A3'>Whale Zone</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📊</div><div style='font-size:11px;font-weight:800;color:#FFF'>CVD Real</div><div style='font-size:10px;color:#8A93A3'>Buy vs Sell</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📈</div><div style='font-size:11px;font-weight:800;color:#FFF'>OI + Funding</div><div style='font-size:10px;color:#8A93A3'>Open Interest</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📖</div><div style='font-size:11px;font-weight:800;color:#FFF'>Order Book</div><div style='font-size:10px;color:#8A93A3'>Buy / Sell Walls</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>⏰</div><div style='font-size:11px;font-weight:800;color:#FFF'>Killzone</div><div style='font-size:10px;color:#8A93A3'>London / NY</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>🧹</div><div style='font-size:11px;font-weight:800;color:#FFF'>Sweep</div><div style='font-size:10px;color:#8A93A3'>Stop Hunt</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📉</div><div style='font-size:11px;font-weight:800;color:#FFF'>EMA 9/21</div><div style='font-size:10px;color:#8A93A3'>Trend</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📊</div><div style='font-size:11px;font-weight:800;color:#FFF'>RSI</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📈</div><div style='font-size:11px;font-weight:800;color:#FFF'>MACD</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>"
+"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📏</div><div style='font-size:11px;font-weight:800;color:#FFF'>ATR</div><div style='font-size:10px;color:#8A93A3'>Volatility</div></div>"
+"<div style='background:#12161F;border:1px solid #FFD700;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>💎</div><div style='font-size:11px;font-weight:900;color:#FFD700'>BLY7TRADER</div><div style='font-size:10px;color:#8A93A3'>@WHYNOTBLY7</div></div>"
+"</div>", unsafe_allow_html=True)
 st.markdown("<style>.stApp{background:#0B0E14;color:#E6E9EF} h1,h2,h3{color:#E6E9EF!important} .stButton>button{background:#FFD700;color:#000;font-weight:900;border-radius:10px;border:1px solid #FFD700} div[data-testid='stMetric']{background:#12161F;border:1px solid #1E2530;border-radius:14px} .stExpander{border:1px solid #1E2530;border-radius:14px;background:#12161F} section[data-testid='stSidebar']{background:#0F131B;border-right:1px solid #1E2530}</style>", unsafe_allow_html=True)
 
 def api_json(url, params=None, timeout=TIMEOUT):
@@ -44,7 +50,7 @@ def killzone_status():
     cur=now_cairo(); mins=cur.hour*60+cur.minute
     if 10*60<=mins<=12*60: return True,"London 10:00-12:00 Cairo"
     if 15*60+30<=mins<=17*60+30: return True,"New York 15:30-17:30 Cairo"
-    return False,"خارج Killzone - بونص فقط، مش حظر"
+    return False,"خارج Killzone - "
 
 def init_db():
     with sqlite3.connect(DB_PATH) as c:
