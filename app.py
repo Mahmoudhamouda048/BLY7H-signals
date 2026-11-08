@@ -1,1108 +1,492 @@
-# BLY7H ULTIMATE 
-#dark signs 
-#Real gains 
-import os, json, time, sqlite3, hashlib, math
+import os, json, time, math, sqlite3, hashlib
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 import requests
 import streamlit as st
-st.set_page_config(page_title="BLY7H ULTIMATE V20", page_icon="💎", layout="wide", initial_sidebar_state="collapsed")
-import os as _os
-def _bly7h_show_logo():
-    try:
-        _logo_path = None
-        for _p in ["bly7h_logo.jpg", "bly7h_logo.png", "logo.jpg", "assets/bly7h_logo.jpg"]:
-            if _os.path.exists(_p):
-                _logo_path = _p; break
-        if _logo_path:
-            _c1,_c2,_c3 = st.columns([1,2,1])
-            with _c2: st.image(_logo_path, use_container_width=True)
-        else:
-            st.markdown("""<div style="text-align:center; padding:12px 0 4px 0;"><div style="font-size:42px; font-weight:900; letter-spacing:4px; background: linear-gradient(90deg,#FFD700,#FF8C00,#FFD700); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">BLY7H ELITE</div><div style="color:#FFD700; font-size:13px; letter-spacing:3px;">@WHYNOTBLY7 &nbsp;•&nbsp; PREDICT BEFORE THE MOVE</div></div>""", unsafe_allow_html=True)
-    except Exception: pass
-try: _bly7h_show_logo()
-except Exception: pass
-APP_TITLE = "💎 BLY7H ULTIMATE V20 V7 - MEXC PREDICTION LAB"
+
+st.set_page_config(page_title="BLY7TRADER SIGNALS", page_icon="💎", layout="wide", initial_sidebar_state="collapsed")
+CAIRO = ZoneInfo("Africa/Cairo")
 DB_PATH = "bly7h_signals.db"
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "BLY7H-Scanner/19.0"})
-TIMEOUT = 8
+SESSION.headers.update({"User-Agent":"BLY7TRADER-SIGNALS/V19-MOD"})
+TIMEOUT = 10
 STABLES = {"USDCUSDT","BUSDUSDT","DAIUSDT","FDUSDUSDT","USDEUSDT"}
-CAIRO = ZoneInfo("Africa/Cairo")
-st.markdown(f"""<h1 style="text-align:center">{APP_TITLE}</h1><p style="text-align:center">ماسح فرص LONG / SHORT — بيانات سوق فعلية مع توضيح حدود كل مؤشر</p>""", unsafe_allow_html=True)
-def api_json(url, params=None):
+
+st.markdown("""<div style="text-align:center"><div style="font-size:42px;font-weight:900;letter-spacing:4px;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">BLY7TRADER SIGNALS</div><div style="color:#FFD700;font-size:13px;letter-spacing:3px;">BLY7H ULTIMATE V19 MODIFIED • @WHYNOTBLY7 • PREDICT BEFORE THE MOVE</div></div>""", unsafe_allow_html=True)
+
+st.markdown("""<style>
+:root{--gold:#FFD700;--bg:#0B0E14;--card:#12161F;--line:#1E2530}
+.stApp{background:#0B0E14;color:#E6E9EF}
+h1,h2,h3{color:#E6E9EF!important;letter-spacing:.3px}
+.stButton>button{background:linear-gradient(90deg,#FFD700,#FF8C00);color:#000;font-weight:800;border-radius:12px;border:0;padding:10px 18px}
+.stButton>button:hover{filter:brightness(1.08)}
+div[data-testid="stMetric"]{background:#12161F;border:1px solid #1E2530;border-radius:14px;padding:14px}
+div[data-testid="stDataFrame"]{border-radius:14px;overflow:hidden}
+.stExpander{border:1px solid #1E2530;border-radius:14px;background:#12161F}
+section[data-testid="stSidebar"]{background:#0F131B}
+.badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.badge-long{background:#0E2A1A;color:#2ECC71;border:1px solid #1E5A35}
+.badge-short{background:#2A1113;color:#FF6B6B;border:1px solid #5A1E1E}
+.card{background:#12161F;border:1px solid #1E2530;border-radius:16px;padding:16px}
+.small{color:#8A93A3;font-size:12px}
+</style>""", unsafe_allow_html=True)
+
+def api_json(url, params=None, timeout=TIMEOUT):
     try:
-        r = SESSION.get(url, params=params, timeout=TIMEOUT); r.raise_for_status()
-        p = r.json()
-        if isinstance(p, dict) and p.get("code") not in (None,"200000",200): return None
-        return p
+        r = SESSION.get(url, params=params, timeout=timeout)
+        if r.status_code != 200: return None
+        j = r.json()
+        if isinstance(j, dict) and j.get("code") not in (None,"200000",200,0): return None
+        return j
     except Exception: return None
 def safe_float(v, d=0.0):
     try:
         x=float(v); return x if pd.notna(x) else d
-    except Exception: return d
-def clamp_entry(entry, price, is_long):
-    # trade with BLY7TRADER 
-    if price<=0: return entry
-    if abs(entry-price)/price*100>1.5: return price*(0.997 if is_long else 1.003)
-    return entry
+    except: return d
 def now_cairo(): return datetime.now(CAIRO)
 def killzone_status():
     cur=now_cairo(); mins=cur.hour*60+cur.minute
-    if 10*60<=mins<=12*60: return True,"نافذة لندن التقريبية"
-    if 15*60+30<=mins<=17*60+30: return True,"نافذة نيويورك التقريبية"
-    return False,"خارج النوافذ المحددة"
+    if 10*60<=mins<=12*60: return True,"London 10:00-12:00 Cairo"
+    if 15*60+30<=mins<=17*60+30: return True,"New York 15:30-17:30 Cairo"
+    return False,"خارج Killzone - بونص فقط، مش حظر"
+
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, exchange TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, score INTEGER NOT NULL, price REAL NOT NULL, entry REAL NOT NULL, stop REAL NOT NULL, tp1 REAL NOT NULL, tp2 REAL NOT NULL, change_pct REAL NOT NULL, volume_ratio REAL NOT NULL, cvd_proxy REAL NOT NULL, outcome TEXT DEFAULT 'OPEN')""")
-        conn.commit()
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, exchange TEXT, symbol TEXT, side TEXT, score INTEGER, price REAL, entry REAL, stop REAL, tp1 REAL, tp2 REAL, tp3 REAL, change_pct REAL, volume_ratio REAL, cvd REAL, outcome TEXT DEFAULT 'OPEN')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, symbol TEXT, side TEXT, entry REAL, stop REAL, tp1 REAL, tp2 REAL, tp3 REAL, size_usd REAL, status TEXT DEFAULT 'OPEN', pnl REAL DEFAULT 0, exit_price REAL, exit_reason TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS predictions (id INTEGER PRIMARY KEY AUTOINCREMENT, round_start TEXT UNIQUE, feats TEXT, label TEXT, model TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS backtests (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, symbol TEXT, timeframe TEXT, win_rate REAL, total INTEGER, avg_rr REAL, notes TEXT)""")
+        c.commit()
+init_db()
 def save_signals(signals, exchange):
     if not signals: return
     rows=[]; stamp=datetime.now(timezone.utc).isoformat()
-    for s in signals: rows.append((stamp,exchange,s["symbol"],s["type"],s["score"],s["price"],s["entry"],s["stop"],s["tp1"],s["tp2"],s["ch"],s["vol"],s["buy"],"OPEN"))
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.executemany("""INSERT INTO signals (created_at, exchange, symbol, side, score, price, entry, stop, tp1, tp2, change_pct, volume_ratio, cvd_proxy, outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows); conn.commit()
-def load_signal_history(limit=100):
-    with sqlite3.connect(DB_PATH) as conn: return pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT ?", conn, params=(limit,))
+    for s in signals: rows.append((stamp,exchange,s["symbol"],s["type"],s["score"],s["price"],s["entry"],s["stop"],s["tp1"],s["tp2"],s.get("tp3",s["tp2"]),s["ch"],s["vol"],s["buy"],"OPEN"))
+    with sqlite3.connect(DB_PATH) as c: c.executemany("INSERT INTO signals (created_at,exchange,symbol,side,score,price,entry,stop,tp1,tp2,tp3,change_pct,volume_ratio,cvd,outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows); c.commit()
+
 def send_telegram(message):
-    token=st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN","")) if hasattr(st,"secrets") else os.getenv("TELEGRAM_BOT_TOKEN","")
-    chat_id=st.secrets.get("TELEGRAM_CHANNEL_ID", st.secrets.get("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID",""))) if hasattr(st,"secrets") else os.getenv("TELEGRAM_CHAT_ID","")
-    if not token: return False,"أضف TELEGRAM_BOT_TOKEN داخل Streamlit Secrets"
-    if not chat_id: return False,"أضف TELEGRAM_CHANNEL_ID أو TELEGRAM_CHAT_ID داخل Secrets"
+    try: token=st.secrets["TELEGRAM_BOT_TOKEN"]
+    except Exception: token=os.getenv("TELEGRAM_BOT_TOKEN","")
+    try: chat=st.secrets["TELEGRAM_CHANNEL_ID"]
+    except Exception:
+        try: chat=st.secrets["TELEGRAM_CHAT_ID"]
+        except Exception: chat=os.getenv("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHANNEL_ID",""))
+    if not token: return False,"أضف TELEGRAM_BOT_TOKEN في Secrets"
+    if not chat: return False,"أضف TELEGRAM_CHANNEL_ID في Secrets"
     try:
-        r=SESSION.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat_id,"text":message,"disable_web_page_preview":True}, timeout=15)
+        r=SESSION.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat,"text":message,"disable_web_page_preview":True}, timeout=15)
         d=r.json()
-        if r.ok and d.get("ok"): return True,"تم الإرسال"
-        return False,d.get("description",f"Telegram HTTP {r.status_code}")
+        return (True,"تم الإرسال") if r.ok and d.get("ok") else (False,d.get("description","Telegram error"))
     except Exception as e: return False,str(e)
-def format_telegram(signal):
-    side="🚀 LONG" if signal["type"]=="LONG" else "📉 SHORT"
-    return f"{side} — {signal['symbol']}\n⭐ Score: {signal['score']}/100\n💵 السعر: {signal['price']}\n🎯 الدخول المقترح: {signal['entry']}\n⛔ وقف الخسارة - نقطة اللاعودة: {signal['stop']}\n✅ TP1: {signal['tp1']}\n🏆 TP2: {signal['tp2']}\n🏆 TP3 رنر: {signal.get('tp3','-')}\n📈 تغير آخر ساعة: {signal['ch']}%\n📦 حجم التداول: x{signal['vol']}\n📊 CVD proxy: {signal['buy']}%\n{signal['extra']}\n@WHYNOTBLY7"
-def send_signal_batch(signals):
-    sent,errors=0,[]
-    for s in sorted(signals, key=lambda x:x["score"], reverse=True)[:5]:
-        ok,msg=send_telegram(format_telegram(s))
-        if ok: sent+=1
-        else: errors.append(msg)
-        time.sleep(0.4)
-    if sent: st.success(f"📡 تم إرسال {sent} إشارة إلى تليجرام")
-    if errors and not sent: st.error(f"تعذر الإرسال: {errors[-1]}")
-def get_kucoin_symbols(limit=100):
-    p=api_json("https://api.kucoin.com/api/v1/market/allTickers"); tickers=(p or {}).get("data",{}).get("ticker",[])
-    rows=[x for x in tickers if x.get("symbol","").endswith("-USDT")]; rows.sort(key=lambda x:safe_float(x.get("volValue")), reverse=True); return [x["symbol"] for x in rows[:limit]]
-def get_kucoin_klines(symbol):
-    end=int(time.time()); start=end-110*3600
-    p=api_json("https://api.kucoin.com/api/v1/market/candles", {"type":"1hour","symbol":symbol,"startAt":start,"endAt":end})
+
+def fmt_bly7trader(s):
+    side="🚀 LONG" if s["type"]=="LONG" else "🔻 SHORT"
+    rr1 = abs(s["tp1"]-s["entry"])/abs(s["entry"]-s["stop"]) if abs(s["entry"]-s["stop"])>0 else 0
+    rr2 = abs(s["tp2"]-s["entry"])/abs(s["entry"]-s["stop"]) if abs(s["entry"]-s["stop"])>0 else 0
+    return f"""BLY7TRADER\n\n{side} — {s['symbol']}\n⭐ Score: {s['score']}/100\n\n💵 Price: {s['price']:.8g}\n🎯 Entry: {s['entry']:.8g}\n⛔ Stop Loss: {s['stop']:.8g}\n✅ TP1: {s['tp1']:.8g}\n🏆 TP2: {s['tp2']:.8g}\n🏆 TP3: {s.get('tp3',s['tp2']):.8g}\n📊 R:R TP1 1:{rr1:.2f} | TP2 1:{rr2:.2f}\n\n📈 1H Change: {s['ch']}%\n📦 Volume: x{s['vol']}\n📊 CVD: {s['buy']}%\n{s.get('extra','')}\n\n📩 Telegram: @WHYNOTBLY7\n#BLY7TRADER"""
+
+def kucoin_futures_symbols(limit=1000):
+    p=api_json("https://api-futures.kucoin.com/api/v1/contracts/active")
+    d=(p or {}).get("data",[])
+    out=[]
+    for c in d:
+        s=c.get("symbol","")
+        if s.endswith("USDTM"): out.append(s)
+    return out[:limit]
+def mexc_futures_symbols(limit=1000):
+    p=api_json("https://contract.mexc.com/api/v1/contract/detail")
+    d=(p or {}).get("data",[]) if isinstance(p,dict) else []
+    out=[]
+    for c in d:
+        s=c.get("symbol","")
+        if s.endswith("_USDT"): out.append(s)
+    return out[:limit]
+def bybit_futures_symbols(limit=1000):
+    p=api_json("https://api.bybit.com/v5/market/instruments-info", {"category":"linear","limit":1000})
+    d=(p or {}).get("result",{}).get("list",[])
+    out=[c.get("symbol","") for c in d if c.get("symbol","").endswith("USDT")]
+    return out[:limit]
+
+def klines_kucoin_fut(symbol, gran=15, limit=200):
+    end=int(time.time()*1000); start=end-limit*gran*60*1000
+    p=api_json("https://api-futures.kucoin.com/api/v1/kline/query", {"symbol":symbol,"granularity":gran,"from":start,"to":end})
     d=(p or {}).get("data",[])
     if len(d)<30: return None
-    f=pd.DataFrame(d, columns=["time","open","close","high","low","vol","turnover"])
-    for c in ("open","close","high","low","vol"): f[c]=pd.to_numeric(f[c], errors="coerce")
-    return f.sort_values("time").dropna().reset_index(drop=True)
-def get_binance_symbols(limit=100):
-    p=api_json("https://data-api.binance.vision/api/v3/ticker/24hr")
-    if not isinstance(p,list): return []
-    rows=[x for x in p if x.get("symbol","").endswith("USDT") and x.get("symbol") not in STABLES]; rows.sort(key=lambda x:safe_float(x.get("quoteVolume")), reverse=True); return [x["symbol"] for x in rows[:limit]]
-def get_binance_klines(symbol):
-    p=api_json("https://data-api.binance.vision/api/v3/klines", {"symbol":symbol,"interval":"1h","limit":100})
-    if not isinstance(p,list) or len(p)<30: return None
-    f=pd.DataFrame(p, columns=["ot","open","high","low","close","vol","ct","qav","trades","tb","tq","ignore"])
-    for c in ("open","high","low","close","vol"): f[c]=pd.to_numeric(f[c], errors="coerce")
-    return f.dropna().reset_index(drop=True)
-def get_btc_change():
-    p=api_json("https://data-api.binance.vision/api/v3/klines", {"symbol":"BTCUSDT","interval":"1h","limit":2})
-    if not isinstance(p,list) or len(p)<2: return None
-    prev=safe_float(p[-2][4]); cur=safe_float(p[-1][4]); return (cur-prev)/prev*100 if prev else None
-def get_binance_funding(symbol):
-    base=symbol.replace("-USDT","").replace("USDT","")
-    p=api_json("https://fapi.binance.com/fapi/v1/premiumIndex", {"symbol":f"{base}USDT"})
-    if not isinstance(p,dict) or "lastFundingRate" not in p: return None
-    return safe_float(p["lastFundingRate"])*100
-def get_binance_oi_change(symbol):
-    base=symbol.replace("-USDT","").replace("USDT","")
-    p=api_json("https://fapi.binance.com/futures/data/openInterestHist", {"symbol":f"{base}USDT","period":"5m","limit":12})
-    if not isinstance(p,list) or len(p)<2: return None,None
-    first=safe_float(p[0].get("sumOpenInterest")); last=safe_float(p[-1].get("sumOpenInterest"))
-    if first<=0: return None,last
-    return (last-first)/first*100, last
-def get_orderbook_wall(symbol):
-    base=symbol.replace("-USDT","").replace("USDT","")
-    p=api_json("https://data-api.binance.vision/api/v3/depth", {"symbol":f"{base}USDT","limit":20})
-    if not isinstance(p,dict): return "بيانات دفتر الأوامر غير متاحة"
-    bids,asks=p.get("bids",[]),p.get("asks",[])
-    if not bids or not asks: return "دفتر الأوامر فارغ أو غير متاح"
-    bl=[(safe_float(a)*safe_float(b), safe_float(a)) for a,b in bids]; al=[(safe_float(a)*safe_float(b), safe_float(a)) for a,b in asks]
-    mb=max(bl,key=lambda x:x[0]); ma=max(al,key=lambda x:x[0])
-    if ma[0]>mb[0]*1.5: return f"عرض بيع أكبر نسبيًا: {ma[0]:,.0f} USDT عند {ma[1]}"
-    if mb[0]>ma[0]*1.5: return f"طلب شراء أكبر نسبيًا: {mb[0]:,.0f} USDT عند {mb[1]}"
-    return f"لا يوجد جدار بارز؛ شراء {mb[0]:,.0f} / بيع {ma[0]:,.0f} USDT"
-def check_spot_listings(symbol):
-    base=symbol.replace("-USDT","").replace("USDT","")
-    checks=[("KUCOIN",f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={base}-USDT"),("GATE",f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={base}_USDT"),("BITGET",f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={base}USDT"),("BYBIT",f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={base}USDT")]
-    avail=["BINANCE"]
-    for name,url in checks:
-        try:
-            r=SESSION.get(url, timeout=4)
-            if not r.ok: continue
-            d=r.json()
-            if name=="KUCOIN": valid=d.get("code")=="200000" and bool(d.get("data"))
-            elif name=="GATE": valid=isinstance(d,list) and len(d)>0
-            elif name=="BITGET": valid=d.get("code")=="00000" and bool(d.get("data",{}).get("list"))
-            else: valid=d.get("retCode")==0 and bool(d.get("result",{}).get("list"))
-            if valid: avail.append(name)
-        except Exception: pass
-    return len(avail),avail
-def candle_volume_delta_proxy(frame, lookback=20):
-    rec=frame.tail(lookback); g=rec.loc[rec["close"]>rec["open"],"vol"].sum(); r=rec.loc[rec["close"]<rec["open"],"vol"].sum(); tot=g+r; return ((g-r)/tot*100) if tot else 0.0
-def find_recent_fvg(frame, lookback=30):
-    bull=bear=None; start=max(1,len(frame)-lookback)
-    for i in range(start, len(frame)-1):
-        ph=safe_float(frame["high"].iloc[i-1]); pl=safe_float(frame["low"].iloc[i-1]); nl=safe_float(frame["low"].iloc[i+1]); nh=safe_float(frame["high"].iloc[i+1])
-        if nl>ph: bull=(ph,nl,(ph+nl)/2)
-        if nh<pl: bear=(nh,pl,(nh+pl)/2)
-    return bull,bear
-def candle_trap_note(frame, side, cvd_proxy):
-    c=frame.iloc[-1]; h,l=safe_float(c["high"]),safe_float(c["low"]); o,cl=safe_float(c["open"]),safe_float(c["close"]); body=abs(cl-o); uw=h-max(o,cl); lw=min(o,cl)-l
-    if side=="SHORT" and body>0 and uw>body*1.5: return "ذيل علوي طويل؛ احتمال رفض سعري، وليس إثباتًا لضرب ستوبات"
-    if side=="LONG" and body>0 and lw>body*1.5: return "ذيل سفلي طويل؛ احتمال رفض سعري، وليس إثباتًا لتجميع الحيتان"
-    return f"ضغط الشموع التقريبي: {cvd_proxy:+.1f}%"
-
-def analyze(frame, symbol, settings):
+    df=pd.DataFrame(d, columns=["time","open","close","high","low","vol","turnover"])
+    for c in ["open","close","high","low","vol"]: df[c]=pd.to_numeric(df[c], errors="coerce")
+    return df.dropna().reset_index(drop=True)
+def klines_mexc_fut(symbol, interval="15m", limit=200):
+    p=api_json("https://contract.mexc.com/api/v1/contract/kline", {"symbol":symbol,"interval":interval,"limit":limit})
+    d=(p or {}).get("data",[])
+    if not d or len(d)<30: return None
     try:
-        if frame is None or len(frame)<30: return None,"بيانات شموع غير كافية"
-        last=safe_float(frame["close"].iloc[-1]); prev=safe_float(frame["close"].iloc[-2])
-        if last<=0 or prev<=0: return None,"سعر غير صالح"
-        change=(last-prev)/prev*100
-        if abs(change)>8: return None,f"حركة آخر ساعة كبيرة جدًا: {change:.2f}%"
-        avg_vol=safe_float(frame["vol"].iloc[-21:-1].mean()); cur_vol=safe_float(frame["vol"].iloc[-1]); vol_ratio=cur_vol/avg_vol if avg_vol>0 else 0
-        cvd_proxy=candle_volume_delta_proxy(frame)
-        if abs(cvd_proxy)<3: return None,f"ضغط الشموع ضعيف: {cvd_proxy:.1f}%"
-        side="LONG" if cvd_proxy>0 else "SHORT"
-        # Wait for strong confirmation to protect your capital.
-        btc_change=get_btc_change() if settings["btc_filter"] else None
-        if settings["btc_filter"] and btc_change is not None:
-            if side=="LONG" and btc_change<-2: return None,f"فلتر BTC: هبوط {btc_change:.2f}%"
-            if side=="SHORT" and btc_change>2: return None,f"فلتر BTC: صعود {btc_change:.2f}%"
-        bull_fvg,bear_fvg=find_recent_fvg(frame)
-        if settings["use_fvg"] and not (bull_fvg or bear_fvg): return None,"لا توجد فجوة FVG حديثة"
-        in_kz,kz_label=killzone_status()
-        funding=get_binance_funding(symbol) if settings["funding_filter"] else None
-        if settings["funding_filter"] and funding is not None:
-            if side=="LONG" and funding>0.05: return None,f"فاندنج مرتفع ضد LONG: {funding:.4f}%"
-            if side=="SHORT" and funding<-0.05: return None,f"فاندنج سالب ضد SHORT: {funding:.4f}%"
-        score=40; score+=min(max(vol_ratio,0)*4,20); score+=min(abs(cvd_proxy)*0.25,20); score+=8 if ((side=="LONG" and bull_fvg) or (side=="SHORT" and bear_fvg)) else 0; score+=5 if in_kz else 0; score=min(int(score),95)
-        if score<settings["min_score"]: return None,f"السكور {score} أقل من المطلوب {settings['min_score']}"
-        live_price=last
-        entry=live_price
-        #trade with BLY7TRADER 
-        try:
-            _tr = (frame["high"]-frame["low"]).tail(14).mean()
-            atr_v = float(_tr) if _tr and float(_tr)>0 else abs(last*0.01)
-        except Exception: atr_v = abs(last*0.01)
-        if atr_v <= 0: atr_v = abs(last*0.01)
-        
-        recent_high = safe_float(frame["high"].tail(20).max()); recent_low = safe_float(frame["low"].tail(20).min())
-        high50 = safe_float(frame["high"].tail(50).max()); low50 = safe_float(frame["low"].tail(50).min())
-        _highs = sorted([safe_float(x) for x in frame["high"].tail(30).tolist() if safe_float(x) > live_price])
-        _lows = sorted([safe_float(x) for x in frame["low"].tail(30).tolist() if safe_float(x) < live_price], reverse=True)
-        # Order Block - 
-        ob_low=safe_float(frame["low"].iloc[-3]); ob_high=safe_float(frame["high"].iloc[-3])
-        # FVG
-        if side=="LONG":
-            #الاستوب:  🙈🙊 ---
-            if bull_fvg and abs(bull_fvg[2]-live_price)/live_price<=0.02:
-                no_return=float(bull_fvg[0]); nr_reason="قاع FVG - من الشموع"
-            elif ob_low < live_price:
-                no_return=float(ob_low); nr_reason="قاع Order Block - اخر 3 شموع"
-            else:
-                no_return=float(recent_low); nr_reason="قاع اخر 20 شمعة - Swing Low"
-            _dist = entry - no_return
-            if _dist < 0.6*atr_v:
-                no_return = entry - 0.8*atr_v; nr_reason += " + ضبط ATR (كان لازق)"
-            elif _dist > 2.5*atr_v:
-                no_return = entry - 2.0*atr_v; nr_reason += " + ضبط ATR (كان بعيد اوي)"
-            stop=float(no_return)
-            risk = entry - stop
-            # ---🎯 TP1 ---
-            _cands = []
-            if bull_fvg and float(bull_fvg[1]) > live_price: _cands.append((float(bull_fvg[1]), "قمة FVG"))
-            if ob_high > live_price: _cands.append((float(ob_high), "قمة Order Block"))
-            if _highs: _cands.append((_highs[0], "اول مقاومة - Swing High"))
-            if recent_high > live_price: _cands.append((float(recent_high), "القمة الاخيرة 20 شمعة"))
-            _cands = sorted([c for c in _cands if c[0] > live_price + 0.5*atr_v])
-            if _cands: tp1, tp1_r = _cands[0]
-            else: tp1, tp1_r = entry + 1.5*atr_v, "ATR 1.5 - مفيش مقاومة قريبة"
-            #  TP1 
-            if (tp1-entry) < 1.2*risk:
-                tp1 = entry + 1.5*risk; tp1_r += " + تمديد لـ RR 1.5"
-            # ---🎯 TP2:
-            _cands2 = [c for c in _cands if c[0] > tp1 + 0.5*atr_v]
-            if _cands2: tp2, tp2_r = _cands2[0]
-            elif high50 > tp1: tp2, tp2_r = float(high50), "قمة 50 شمعة - سيولة"
-            else: tp2, tp2_r = entry + 2.5*risk, "ATR - امتداد RR 2.5"
-            if (tp2-entry) < 2.0*risk:
-                tp2 = entry + 2.5*risk; tp2_r += " + تمديد لـ RR 2.5"
-            # --- 🎯TP3 رنر: امتداد النموذج - فيبوناتشي 1.618 من المخاطرة + القمة ---
-            tp3 = entry + (tp2-entry)*1.0 + risk*0.618
-            
-            if (tp3-tp2) < 0.8*atr_v: tp3 = tp2 + 1.0*atr_v
-            tp3_r="امتداد النموذج + فيبوناتشي - رنر"
-        else:  # SHORT
-            if bear_fvg and abs(bear_fvg[2]-live_price)/live_price<=0.02:
-                no_return=float(bear_fvg[1]); nr_reason="قمة FVG - من الشموع"
-            elif ob_high > live_price:
-                no_return=float(ob_high); nr_reason="قمة Order Block - اخر 3 شموع"
-            else:
-                no_return=float(recent_high); nr_reason="قمة اخر 20 شمعة - Swing High"
-            _dist = no_return - entry
-            if _dist < 0.6*atr_v:
-                no_return = entry + 0.8*atr_v; nr_reason += " + ضبط ATR (كان لازق)"
-            elif _dist > 2.5*atr_v:
-                no_return = entry + 2.0*atr_v; nr_reason += " + ضبط ATR (كان بعيد اوي)"
-            stop=float(no_return)
-            risk = stop - entry
-            _cands = []
-            if bear_fvg and float(bear_fvg[0]) < live_price: _cands.append((float(bear_fvg[0]), "قاع FVG"))
-            if ob_low < live_price: _cands.append((float(ob_low), "قاع Order Block"))
-            if _lows: _cands.append((_lows[0], "اول دعم - Swing Low"))
-            if recent_low < live_price: _cands.append((float(recent_low), "القاع الاخير 20 شمعة"))
-            _cands = sorted([c for c in _cands if c[0] < live_price - 0.5*atr_v], reverse=True)
-            if _cands: tp1, tp1_r = _cands[0]
-            else: tp1, tp1_r = entry - 1.5*atr_v, "ATR 1.5 - مفيش دعم قريب"
-            if (entry-tp1) < 1.2*risk:
-                tp1 = entry - 1.5*risk; tp1_r += " + تمديد لـ RR 1.5"
-            _cands2 = [c for c in _cands if c[0] < tp1 - 0.5*atr_v]
-            if _cands2: tp2, tp2_r = _cands2[0]
-            elif low50 < tp1: tp2, tp2_r = float(low50), "قاع 50 شمعة - سيولة"
-            else: tp2, tp2_r = entry - 2.5*risk, "ATR - امتداد RR 2.5"
-            if (entry-tp2) < 2.0*risk:
-                tp2 = entry - 2.5*risk; tp2_r += " + تمديد لـ RR 2.5"
-            tp3 = entry - (entry-tp2)*1.0 - risk*0.618
-            if (tp2-tp3) < 0.8*atr_v: tp3 = tp2 - 1.0*atr_v
-            tp3_r="امتداد النموذج + فيبوناتشي - رنر"
-        if abs(tp1-entry) < 0.3*atr_v:
-            tp1 = entry + 1.5*atr_v if side=="LONG" else entry - 1.5*atr_v; tp1_r += " + اصلاح Bug - كان = الدخول"
-        if abs(tp2-tp1) < 0.5*atr_v:
-            tp2 = tp1 + 1.0*atr_v if side=="LONG" else tp1 - 1.0*atr_v; tp2_r += " + اصلاح Bug - كان = TP1"
-        if abs(tp3-tp2) < 0.5*atr_v:
-            tp3 = tp2 + 1.0*atr_v if side=="LONG" else tp2 - 1.0*atr_v
-        plan_txt = f"الخطة: TP1 اقفل 40% | TP2 اقفل 30% | حرك الوقف للدخول | TP3 سيب 30% رنر | RR TP1 {abs(tp1-entry)/abs(entry-stop):.2f} | RR TP2 {abs(tp2-entry)/abs(entry-stop):.2f}"
-        notes=[f"📊 CVD proxy: {cvd_proxy:+.1f}% (حجم الشموع، وليس CVD صفقات)", f"📦 حجم آخر شمعة: x{vol_ratio:.2f} من متوسط 20 شمعة", f"⏰ {kz_label}" if settings["killzone"] else "⏰ فلتر الوقت متوقف", f"🐋 {candle_trap_note(frame, side, cvd_proxy)}"]
-        rel=bull_fvg if side=="LONG" else bear_fvg
-        if rel: notes.append(f"FVG: {rel[0]:.8g} إلى {rel[1]:.8g}؛ المنتصف {rel[2]:.8g}")
-        notes.append(f"⛔ الاستوب = نقطة اللاعودة: {stop} - {nr_reason} - كسرها = النموذج مات")
-        notes.append(f"📏 ATR(14): {atr_v:.8g} | المخاطرة: {abs(entry-stop):.8g} ({abs(entry-stop)/entry*100:.2f}%) | {plan_txt}")
-        notes.append(f"✅ TP1: {tp1} - {tp1_r} | 🏆 TP2: {tp2} - {tp2_r} | 🏆 TP3 رنر: {tp3} - {tp3_r}")
-        if settings["funding_filter"]: notes.append(f"💸 Funding Binance: {funding:+.4f}%" if funding is not None else "💸 Funding: غير متاح لهذا الرمز")
-        oi_ch,oi_val=get_binance_oi_change(symbol)
-        notes.append(f"📈 OI Binance: {oi_ch:+.2f}%" if oi_ch is not None else "📈 OI Binance: غير متاح")
-        if settings["wall_filter"]: notes.append(f"🧱 دفتر أوامر Binance: {get_orderbook_wall(symbol)}")
-        if settings["confirm_exchanges"]:
-            cnt,exs=check_spot_listings(symbol); notes.append(f"🌐 الرمز متاح Spot على {cnt}/5: {', '.join(exs)}")
-            if cnt>=3: score=min(score+3,98)
-        risk_pct=abs(stop-last)/last*100 if last else 0
-        notes.append(f"🎯 مسافة وقف الخسارة (نقطة اللاعودة): {risk_pct:.2f}% من السعر اللحظي")
-        notes.append("⚠️ مستويات من الستركشر والسعر اللحظي؛ يعاد حسابها عند التنفيذ.")
-        notes.append("الخطة: TP1 اقفل 40% - TP2 اقفل 30% - حرك الوقف للدخول - سيب 30% رنر لـ TP3")
-        result={"symbol":symbol,"type":side,"score":score,"price":round(last,8),"ch":round(change,2),"vol":round(vol_ratio,2),"buy":round(cvd_proxy,1),"entry":round(entry,8),"stop":round(stop,8),"tp1":round(tp1,8),"tp2":round(tp2,8),"tp3":round(tp3,8),"no_return":round(no_return,8),"nr_reason":nr_reason,"tp1_r":tp1_r,"tp2_r":tp2_r,"tp3_r":tp3_r,"extra":"\n".join(notes)}
-        return result,"OK"
-    except Exception as e: return None,f"خطأ تحليل: {e}"
-def scan_dex():
-    p=api_json("https://api.dexscreener.com/latest/dex/search/", {"q":"BSC"}); pairs=(p or {}).get("pairs",[]); found=[]; seen=set()
-    for pair in pairs:
-        if pair.get("chainId")!="bsc": continue
-        tok=pair.get("baseToken") or {}; addr=tok.get("address")
-        if not addr or addr in seen: continue
-        seen.add(addr); price=safe_float(pair.get("priceUsd")); liq=safe_float((pair.get("liquidity") or {}).get("usd")); v5=safe_float((pair.get("volume") or {}).get("m5")); ch5=safe_float((pair.get("priceChange") or {}).get("m5"))
-        if price>0 and v5>=5000 and ch5>=5 and liq>=15000: found.append({"symbol":tok.get("symbol","UNKNOWN"),"price":price,"change_5m":ch5,"volume_5m":v5,"liquidity":liq,"url":pair.get("url","")})
-    return sorted(found, key=lambda x:x["volume_5m"], reverse=True)
+        df=pd.DataFrame(d, columns=["time","open","high","low","close","vol"])
+        for c in ["open","high","low","close","vol"]: df[c]=pd.to_numeric(df[c], errors="coerce")
+        return df.dropna().reset_index(drop=True)
+    except: return None
+def klines_bybit_fut(symbol, interval="15", limit=200):
+    p=api_json("https://api.bybit.com/v5/market/kline", {"category":"linear","symbol":symbol,"interval":interval,"limit":limit})
+    d=(p or {}).get("result",{}).get("list",[])
+    if not d or len(d)<30: return None
+    df=pd.DataFrame(d, columns=["time","open","high","low","close","vol","turnover"])
+    for c in ["open","high","low","close","vol"]: df[c]=pd.to_numeric(df[c], errors="coerce")
+    df=df.sort_values("time").reset_index(drop=True)
+    return df
 
-# ---------------- MEXC Learner - محفوظ كامل ----------------
-def get_mexc_klines_15m(limit=200):
-    p=api_json("https://api.mexc.com/api/v3/klines", {"symbol":"BTCUSDT","interval":"15m","limit":limit})
-    if not isinstance(p,list) or len(p)<30: return None
-    f=pd.DataFrame(p, columns=["ot","open","high","low","close","vol","ct","qav"])
-    for c in ("open","high","low","close","vol"): f[c]=pd.to_numeric(f[c], errors="coerce")
-    return f.dropna().reset_index(drop=True)
-def mexc_rsi(closes):
-    diff=closes.diff().dropna(); g=diff[diff>0].mean() if len(diff[diff>0]) else 0; l=-diff[diff<0].mean() if len(diff[diff<0]) else 0.001
-    if l==0: return 100.0
-    return float(100-(100/(1+(g/l))))
-def mexc_features(frame):
-    last=frame.iloc[-1]; price=safe_float(last["close"]); rsi=mexc_rsi(frame["close"].tail(15)); vol=safe_float(last["vol"]); va=safe_float(frame["vol"].iloc[-21:-1].mean()); vx=vol/va if va>0 else 1
-    o=safe_float(last["open"]); h=safe_float(last["high"]); l=safe_float(last["low"]); c=safe_float(last["close"]); body=abs(c-o); up=h-max(o,c); down=min(o,c)-l
-    wick="فوق" if up>body*1.5 else ("تحت" if down>body*1.5 else "مفيش"); streak=0
-    for k in range(len(frame)-1, max(0,len(frame)-6), -1):
-        cc=safe_float(frame["close"].iloc[k]); oo=safe_float(frame["open"].iloc[k])
-        if cc>oo:
-            if streak>=0: streak+=1
-            else: break
-        else:
-            if streak<=0: streak-=1
-            else: break
-    hi=safe_float(frame["high"].tail(20).max()); lo=safe_float(frame["low"].tail(20).min()); pos=(price-lo)/(hi-lo)*100 if hi!=lo else 50; cvd=0.0
-    for k in range(max(0,len(frame)-10), len(frame)):
-        cc=safe_float(frame["close"].iloc[k]); oo=safe_float(frame["open"].iloc[k]); vv=safe_float(frame["vol"].iloc[k]); cvd+=vv if cc>oo else -vv
-    chg3=(price-safe_float(frame["close"].iloc[-4]))/safe_float(frame["close"].iloc[-4])*100 if safe_float(frame["close"].iloc[-4]) else 0
-    return {"price":price,"rsi":round(rsi,1),"vol_x":round(vx,2),"wick":wick,"streak":streak,"pos":round(pos,1),"cvd":round(cvd,0),"chg3":round(chg3,3)}
-def mexc_predict(f):
-    if f["rsi"]>65 and f["wick"]=="فوق": return "ادخل بيع","دوس هبوط في MEXC - RSI عالي + ويك فوق",72
-    if f["rsi"]<35 and f["wick"]=="تحت": return "ادخل شراء","دوس ارتفاع في MEXC - RSI واطي + ويك تحت",72
-    if f["streak"]>=3: return "ادخل شراء","دوس ارتفاع - 3 شموع شراء ورا بعض",65
-    if f["streak"]<=-3: return "ادخل بيع","دوس هبوط - 3 شموع بيع ورا بعض",65
-    if f["cvd"]>0 and f["chg3"]>0: return "ادخل شراء","دوس ارتفاع - CVD شراء + السعر طالع",60
-    if f["cvd"]<0 and f["chg3"]<0: return "ادخل بيع","دوس هبوط - CVD بيع + السعر نازل",60
-    if f["pos"]>85: return "ادخل بيع","دوس هبوط - السعر عند القمة",58
-    if f["pos"]<15: return "ادخل شراء","دوس ارتفاع - السعر عند القاع",58
-    if f["vol_x"]<0.8: return "متدخلش","اتفرج - Vol ميت",0
-    return "متدخلش","اتفرج - مش واضح",0
+def get_futures_klines(exchange, symbol, gran_label="15m", limit=200):
+    if exchange=="KuCoin": return klines_kucoin_fut(symbol, {"1m":1,"3m":3,"5m":5,"15m":15,"1h":60}[gran_label], limit)
+    if exchange=="MEXC": return klines_mexc_fut(symbol, gran_label, limit)
+    if exchange=="Bybit": return klines_bybit_fut(symbol, {"1m":"1","3m":"3","5m":"5","15m":"15","1h":"60"}[gran_label], limit)
+    return None
 
-# ---------------- MEXC PREDICTION LAB V20 - محفوظ كامل ----------------
-LAB_DB="bly7h_mexc_lab.db"
-def lab_init_db():
-    with sqlite3.connect(LAB_DB) as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS lab_rounds (id INTEGER PRIMARY KEY AUTOINCREMENT, round_start TEXT NOT NULL, round_end TEXT NOT NULL, symbol TEXT, open_price REAL, close_price REAL, settlement_proxy REAL, official_result TEXT DEFAULT '', source TEXT DEFAULT 'PROXY_MEXC_SPOT', created_at TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS lab_predictions (id INTEGER PRIMARY KEY AUTOINCREMENT, round_start TEXT NOT NULL, created_at TEXT NOT NULL, pred TEXT, prob REAL, confidence REAL, regime TEXT, reasons TEXT, counter TEXT, invalidation REAL, model_version TEXT, features_hash TEXT, UNIQUE(round_start, model_version))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS lab_features (round_start TEXT PRIMARY KEY, feats TEXT, label TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS lab_models (version TEXT PRIMARY KEY, created_at TEXT, train_n INTEGER, test_acc REAL, brier REAL, logloss REAL, is_active INTEGER DEFAULT 0)""")
-        c.commit()
-CHAINLINK_TWAP_URL = "https://data.chain.link/streams/btc-usd-twap-60s-streams"
-def lab_fetch_chainlink_twap(symbol="BTCUSDT"):
-    try:
-        r = requests.get(CHAINLINK_TWAP_URL, headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
-        if r.status_code==200 and ("TWAP" in r.text or "BTC" in r.text):
-            return {"ok":True,"source":"Chainlink BTC/USD TWAP 60s REAL - data.chain.link/streams/btc-usd-twap-60s-streams","note":"المصدر الرسمي من سكرين MEXC","twap_page_ok":True}
-    except Exception: pass
-    try:
-        # TRADE WITH BLY7H TRADER 
-        r = requests.get("https://api.chain.link/v1/feeds/BTC-USD", headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
-        if r.status_code==200:
-            j=r.json()
-            price=None
-            if isinstance(j,dict):
-                price=j.get("price") or j.get("value") or (j.get("data") or {}).get("price") if isinstance(j.get("data"),dict) else None
-            if price: return {"ok":True,"source":"Chainlink BTC/USD Feed REAL - api.chain.link","price":float(price),"note":"Chainlink Feed - نفس شبكة التسوية"}
-    except Exception: pass
-    return {"ok":False,"source":"CHAINLINK_NEEDS_KEY","note":"Chainlink TWAP الرسمي محتاج API Key من data.chain.link - استخدم MEXC Spot كبديل مؤقت - التسوية الرسمية لسه بتتسجل يدوي"}
-def lab_chainlink_settlement(open_price, twap_avg):
-    if open_price is None or twap_avg is None: return None
-    return "UP" if float(twap_avg) >= float(open_price) else "DOWN"
+def ema(s,n): return s.ewm(span=n, adjust=False).mean()
+def rsi_calc(s,n=14):
+    d=s.diff(); up=d.clip(lower=0); dn=-d.clip(upper=0)
+    ru=up.ewm(alpha=1/n, adjust=False).mean(); rd=dn.ewm(alpha=1/n, adjust=False).mean()
+    rs=ru/(rd.replace(0,np.nan)); return 100-100/(1+rs)
+def macd_calc(s):
+    e12=ema(s,12); e26=ema(s,26); m=e12-e26; sig=ema(m,9); return m,sig,m-sig
+def atr_calc(df,n=14):
+    tr=pd.concat([(df["high"]-df["low"]).abs(), (df["high"]-df["close"].shift()).abs(), (df["low"]-df["close"].shift()).abs()], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/n, adjust=False).mean()
+def momentum_calc(s,n=10): return s - s.shift(n)
 
-def lab_get_chainlink_key():
+def detect_fvg(df):
+    out=[]
+    for i in range(1,len(df)-1):
+        if df["low"].iloc[i+1] > df["high"].iloc[i-1]: out.append({"type":"bull","top":float(df["low"].iloc[i+1]),"bottom":float(df["high"].iloc[i-1]),"mid":(float(df["low"].iloc[i+1])+float(df["high"].iloc[i-1]))/2})
+        if df["high"].iloc[i+1] < df["low"].iloc[i-1]: out.append({"type":"bear","top":float(df["low"].iloc[i-1]),"bottom":float(df["high"].iloc[i+1]),"mid":(float(df["low"].iloc[i-1])+float(df["high"].iloc[i+1]))/2})
+    return out
+def detect_ob(df):
+    return {"ob_low":float(df["low"].iloc[-3]),"ob_high":float(df["high"].iloc[-3])}
+def detect_bsl_ssl(df, lookback=20):
+    return {"BSL":float(df["high"].tail(lookback).max()),"SSL":float(df["low"].tail(lookback).min())}
+def detect_sweep(df):
+    if len(df)<25: return {"sweep":False,"dir":"NONE"}
+    bsl_ssl=detect_bsl_ssl(df.iloc[:-2],20)
+    last=df.iloc[-1]; prev=df.iloc[-2]
+    if float(last["high"])>bsl_ssl["BSL"] and float(last["close"])<bsl_ssl["BSL"]: return {"sweep":True,"dir":"BEARISH_SWEEP"}
+    if float(last["low"])<bsl_ssl["SSL"] and float(last["close"])>bsl_ssl["SSL"]: return {"sweep":True,"dir":"BULLISH_SWEEP"}
+    return {"sweep":False,"dir":"NONE"}
+
+def orderbook_kucoin_fut(symbol):
+    p=api_json("https://api-futures.kucoin.com/api/v1/level2/snapshot", {"symbol":symbol})
+    d=(p or {}).get("data",{})
+    if not d: return None
+    bids=d.get("bids",[])[:10]; asks=d.get("asks",[])[:10]
     try:
-        k = st.secrets.get("CHAINLINK_API_KEY", "") if hasattr(st, "secrets") else ""
-        if k: return str(k).strip()
-    except Exception: pass
-    import os as _o
-    return (_o.getenv("CHAINLINK_API_KEY","") or "").strip()
-def lab_fetch_chainlink_twap_auto(symbol="BTCUSDT", round_start=""):
-    key = lab_get_chainlink_key()
-    # 1) Streams API - بالـ Key
+        bid_vol=sum(float(b[1]) for b in bids); ask_vol=sum(float(a[1]) for a in asks)
+        return {"bid_wall":max([float(b[1]) for b in bids], default=0),"ask_wall":max([float(a[1]) for a in asks], default=0),"bid_vol":bid_vol,"ask_vol":ask_vol,"spread":None}
+    except: return None
+def funding_kucoin(symbol):
+    p=api_json("https://api-futures.kucoin.com/api/v1/funding-rate", {"symbol":symbol})
+    d=(p or {}).get("data",{})
+    if not d: return "N/A"
+    v=d.get("value") if isinstance(d,dict) else None
+    return f"{float(v)*100:.4f}%" if v is not None else "N/A"
+def funding_mexc(symbol):
+    p=api_json("https://contract.mexc.com/api/v1/contract/funding_rate", {"symbol":symbol})
+    d=(p or {}).get("data",{})
+    if not d: return "N/A"
+    v=d.get("fundingRate")
+    return f"{float(v)*100:.4f}%" if v is not None else "N/A"
+def funding_bybit(symbol):
+    p=api_json("https://api.bybit.com/v5/market/funding/history", {"category":"linear","symbol":symbol,"limit":1})
+    l=(p or {}).get("result",{}).get("list",[])
+    if not l: return "N/A"
+    return f"{float(l[0].get('fundingRate',0))*100:.4f}%"
+def oi_kucoin(symbol):
+    p=api_json("https://api-futures.kucoin.com/api/v1/open-interest", {"symbol":symbol})
+    d=(p or {}).get("data",{})
+    if not d: return "N/A"
+    return d.get("openInterest", "N/A")
+def cvd_from_trades_kucoin(symbol):
+    p=api_json("https://api-futures.kucoin.com/api/v1/trade/history", {"symbol":symbol})
+    d=(p or {}).get("data",[])
+    if not d: return None
+    buy=sum(float(t.get("size",0)) for t in d if t.get("side")=="buy"); sell=sum(float(t.get("size",0)) for t in d if t.get("side")=="sell")
+    if buy+sell==0: return None
+    return (buy-sell)/(buy+sell)*100
+
+def analyze_futures(exchange, symbol, display, btc_trend="NEUTRAL"):
+    df = get_futures_klines(exchange, symbol, "1h", 200)
+    if df is None: return None
+    df15 = get_futures_klines(exchange, symbol, "15m", 100)
+    price=float(df["close"].iloc[-1])
+    e9=ema(df["close"],9); e21=ema(df["close"],21); r=rsi_calc(df["close"]); m,sig,hist=macd_calc(df["close"]); a=atr_calc(df); mom=momentum_calc(df["close"])
+    fvg=detect_fvg(df); ob=detect_ob(df); bsl_ssl=detect_bsl_ssl(df); sweep=detect_sweep(df)
+    cvd_real=None
+    if exchange=="KuCoin": cvd_real=cvd_from_trades_kucoin(symbol)
+    if cvd_real is None:
+        last20=df.tail(20); bv=float(last20[last20["close"]>last20["open"]]["vol"].sum()); sv=float(last20[last20["close"]<=last20["open"]]["vol"].sum())
+        cvd=(bv-sv)/(bv+sv+1e-9)*100; cvd_src="CVD proxy من الشموع - تقديري"
+    else: cvd=float(cvd_real); cvd_src="CVD حقيقي من صفقات KuCoin"
+    avg_vol=float(df["vol"].iloc[:-10].mean()) if len(df)>20 else 1; last_vol=float(df["vol"].iloc[-1]); vol_ratio=last_vol/avg_vol if avg_vol>0 else 1
+    score=10; reasons=[]
+    is_long=e9.iloc[-1]>e21.iloc[-1]; is_short=not is_long
+    if is_long: score+=12; reasons.append("EMA9>21")
+    else: score+=12; reasons.append("EMA9<21")
+    r_last=float(r.iloc[-1]) if pd.notna(r.iloc[-1]) else 50
+    if 45<=r_last<=65: score+=10; reasons.append("RSI جاهز")
+    elif r_last>70 or r_last<30: score+=4; reasons.append("RSI متطرف - حذر")
+    else: score+=6
+    if float(hist.iloc[-1])>0 and is_long: score+=8; reasons.append("MACD+")
+    if float(hist.iloc[-1])<0 and is_short: score+=8; reasons.append("MACD-")
+    if fvg: score+=20; reasons.append(f"FVG {fvg[-1]['type']}")
+    if vol_ratio>=1.5: score+=15; reasons.append(f"حجم x{vol_ratio:.2f}")
+    elif vol_ratio>=1.2: score+=8
+    if abs(cvd)>20: score+=10; reasons.append(f"CVD {cvd:.1f}%")
+    if sweep["sweep"]: score+=12; reasons.append(f"Sweep {sweep['dir']}")
+    mtf="N/A"
+    if df15 is not None:
+        e9_15=ema(df15["close"],9); e21_15=ema(df15["close"],21)
+        if is_long and e9_15.iloc[-1]>e21_15.iloc[-1]: score+=8; reasons.append("15m يؤكد LONG"); mtf="15m ✅"
+        elif is_short and e9_15.iloc[-1]<e21_15.iloc[-1]: score+=8; reasons.append("15m يؤكد SHORT"); mtf="15m ✅"
+        else: mtf="15m ❌ تعارض"
+    btc_note=""
+    if btc_trend=="UP" and is_short: score-=8; btc_note="BTC صاعد - SHORT أضعف"
+    if btc_trend=="DOWN" and is_long: score-=8; btc_note="BTC هابط - LONG أضعف"
+    kz,_=killzone_status()
+    if kz: score+=5; reasons.append("Killzone +5")
+    ch_1h=(price-float(df["open"].iloc[-1]))/float(df["open"].iloc[-1])*100 if float(df["open"].iloc[-1])!=0 else 0
+    if abs(ch_1h)>30: return None
+    a_last=float(a.iloc[-1]) if pd.notna(a.iloc[-1]) else price*0.01
+    if a_last<=0: a_last=price*0.01
+    side="LONG" if is_long else "SHORT"
+    if side=="LONG":
+        entry=price; stop=max(ob["ob_low"], price-1.5*a_last)
+        if (entry-stop)/entry>0.03: stop=entry*0.985
+        tp1=entry+1.5*a_last; tp2=entry+2.8*a_last; tp3=entry+4.5*a_last
+    else:
+        entry=price; stop=min(ob["ob_high"], price+1.5*a_last)
+        if (stop-entry)/entry>0.03: stop=entry*1.015
+        tp1=entry-1.5*a_last; tp2=entry-2.8*a_last; tp3=entry-4.5*a_last
+    fee_pct=0.06; slippage_pct=0.03
+    risk=abs(entry-stop); rr1=abs(tp1-entry)/risk if risk>0 else 0; rr2=abs(tp2-entry)/risk if risk>0 else 0; rr3=abs(tp3-entry)/risk if risk>0 else 0
+    funding="N/A"; oi="N/A"; obk=None
+    if exchange=="KuCoin": funding=funding_kucoin(symbol); oi=oi_kucoin(symbol); obk=orderbook_kucoin_fut(symbol)
+    elif exchange=="MEXC": funding=funding_mexc(symbol)
+    elif exchange=="Bybit": funding=funding_bybit(symbol)
+    extra=f"EMA9 {float(e9.iloc[-1]):.4g} / EMA21 {float(e21.iloc[-1]):.4g} | RSI {r_last:.1f} | ATR {a_last:.4g} | BSL {bsl_ssl['BSL']:.4g} / SSL {bsl_ssl['SSL']:.4g} | Sweep {sweep['dir']} | MTF {mtf} | Funding {funding} | OI {oi} | {cvd_src} | {btc_note} | رسوم تقديرية {fee_pct}% + انزلاق {slippage_pct}% | Trailing: حرك الاستوب للدخول عند TP1، ثم Trailing بـ 1 ATR"
+    return {"symbol":display,"exchange":exchange,"type":side,"score":int(max(5,min(100,score))),"price":price,"entry":entry,"stop":stop,"tp1":tp1,"tp2":tp2,"tp3":tp3,"ch":round(float(ch_1h),2),"vol":round(float(vol_ratio),2),"buy":round(float(cvd),1),"rsi":round(r_last,1),"atr":a_last,"fvg":len(fvg),"extra":extra,"rr1":round(float(rr1),2),"rr2":round(float(rr2),2),"rr3":round(float(rr3),2),"funding":funding,"oi":oi,"ob":obk,"killzone":kz,"mtf":mtf}
+
+def mexc_prediction_check(symbol="BTCUSDT"):
+    try: key=st.secrets["CHAINLINK_API_KEY"]
+    except Exception: key=os.getenv("CHAINLINK_API_KEY","")
     if key:
-        # Chainlink Data Streams - Endpoint الرسمي
-        for url in ["https://api.chain.link/v1/data-streams/BTC-USD-TWAP-60s", "https://data.chain.link/api/streams/btc-usd-twap-60s-streams", "https://api.chain.link/data-streams/v1/reports/BTC-USD-TWAP-60s"]:
-            try:
-                r = requests.get(url, headers={"Authorization": f"Bearer {key}", "User-Agent":"BLY7H-AUTO/1.0"}, timeout=10)
-                if r.status_code==200:
-                    j = r.json()
-                    # حاول تطلع TWAP من اي شكل للـ JSON
-                    twap = None
-                    if isinstance(j, dict):
-                        for kk in ["twap","twapPrice","price","value","settlementPrice"]:
-                            if kk in j: twap = safe_float(j[kk]); break
-                        if twap is None and isinstance(j.get("data"), dict):
-                            for kk in ["twap","price","value"]:
-                                if kk in j["data"]: twap = safe_float(j["data"][kk]); break
-                    if twap and twap>0:
-                        return {"ok":True,"twap":twap,"source":"Chainlink Data Streams API REAL - بالـ API Key","has_key":True}
-            except Exception: pass
-    try:
-        p = api_json("https://api.mexc.com/api/v3/klines", {"symbol":symbol,"interval":"1m","limit":15})
-        if isinstance(p, list) and len(p)>=5:
-            closes = [safe_float(x[4]) for x in p]
-            twap = sum(closes)/len(closes) if closes else None
-            open_p = safe_float(p[0][1])
-            if twap and open_p:
-                settle = "UP" if twap >= open_p else "DOWN"
-                return {"ok":True,"twap":twap,"open_price":open_p,"settlement":settle,"source":"AUTO_TWAP - محسوب اوتوماتيك من شموع 1m (Chainlink TWAP = متوسط 60s - نفس الفكرة)","has_key":bool(key),"note":"من غير CHAINLINK_API_KEY - TWAP محسوب اوتوماتيك - لو حطيت الـ Key هيجيب من Chainlink الرسمي مباشرة"}
-    except Exception: pass
-    return {"ok":False,"source":"NONE","note":"فشل جلب TWAP اوتوماتيك"}
-def lab_auto_settle():
-    lab_init_db()
-    import sqlite3 as _sq, json as _jj
-    settled = []
-    try:
-        with _sq.connect(LAB_DB) as _c:
-            rows = _c.execute("SELECT round_start, feats FROM lab_features WHERE label='' OR label IS NULL").fetchall()
-    except Exception: rows = []
-    for rs, feats_s in rows:
-        try:
-            res = lab_fetch_chainlink_twap_auto("BTCUSDT", rs)
-            if not res.get("ok"): continue
-            open_p = None
-            try:
-                d = _jj.loads(feats_s) if feats_s else {}
-            
-                open_p = d.get("price")
-            except Exception: pass
-            if open_p is None: open_p = res.get("open_price")
-            twap = res.get("twap")
-            if open_p is None or twap is None: continue
-            settle = "UP" if float(twap) >= float(open_p) else "DOWN"
-            with _sq.connect(LAB_DB) as _c:
-                _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (settle, rs))
-                _c.commit()
-            settled.append(f"{rs} = {settle} (TWAP {twap:.2f} vs Open {float(open_p):.2f}) - {res.get('source')}")
-        except Exception: continue
-    return settled
-def lab_auto_run_all():
-    settled = lab_auto_settle()
-    evolve = None
-    try: evolve = lab_self_evolve()
-    except Exception as e: evolve = {"evolved":False,"reason":str(e)}
-    return {"settled":settled,"evolve":evolve,"key_present":bool(lab_get_chainlink_key())}
+        return {"status":"CHAINLINK","msg":"Chainlink API Key موجود - التسوية من Chainlink TWAP 60s الرسمي. راجع https://data.chain.link/streams/btc-usd-twap-60s-streams","key":True}
+    p=api_json("https://api.mexc.com/api/v3/ticker/price", {"symbol":symbol})
+    price=safe_float((p or {}).get("price",0))
+    return {"status":"WAIT_OFFICIAL","msg":f"⏳ انتظار التسوية الرسمية - Chainlink TWAP 60s غير متاح (مفيش CHAINLINK_API_KEY في Secrets). السعر الحالي من MEXC Spot كمؤشر فقط: {price} - لا تستخدمه كسعر تسوية. القاعدة: TWAP >= Open => UP، TWAP < Open => DOWN","key":False,"price":price}
 
-def lab_fetch_real_source(symbol="BTCUSDT"):
-    # الترتيب الجديد: 1) Chainlink TWAP الرسمي - 2) prediction.mexc.com - 3) MEXC Spot (Composite) - 4) Binance
-    _cl = lab_fetch_chainlink_twap(symbol)
-    if _cl.get("ok") and _cl.get("price"):
-        return {"ok":True,"source":_cl["source"],"price":_cl["price"],"note":_cl["note"],"settlement_rule":"TWAP >= Open => UP - TWAP < Open => DOWN - Chainlink BTC/USD TWAP 60s"}
-    if _cl.get("twap_page_ok"):
-        return {"ok":True,"source":_cl["source"],"note":_cl["note"]+ " - صفحة TWAP فتحت - للتسوية الدقيقة سجل TWAP من الرابط","settlement_rule":"TWAP >= Open => UP"}
-    headers={"User-Agent":"Mozilla/5.0","Referer":"https://prediction.mexc.com/","Origin":"https://prediction.mexc.com"}
-    for url in ["https://prediction.mexc.com/api/prediction/markets","https://prediction.mexc.com/api/prediction/events","https://prediction.mexc.com/api/v1/prediction/list"]:
-        try:
-            r=requests.get(url, headers=headers, timeout=8)
-            if r.status_code==200:
-                j=r.json()
-                if isinstance(j,dict) and (j.get("data") or j.get("code")==200): return {"ok":True,"source":f"prediction.mexc.com REAL - {url}","data":j,"note":"جاب من المصدر الحقيقي"}
-        except Exception: pass
-    try:
-        r=requests.get("https://api.mexc.com/api/v3/ticker/price", params={"symbol":symbol}, timeout=8)
-        if r.status_code==200 and r.json().get("price"):
-            k=requests.get("https://api.mexc.com/api/v3/klines", params={"symbol":symbol,"interval":"15m","limit":5}, timeout=8)
-            return {"ok":True,"source":"api.mexc.com Spot REAL - جزء من Composite Index","price":float(r.json()["price"]),"klines_ok":k.status_code==200,"note":"prediction API خاص - جبنا من MEXC Spot الحقيقي"}
-    except Exception: pass
-    try:
-        r=requests.get("https://api.binance.com/api/v3/ticker/price", params={"symbol":symbol}, timeout=8)
-        if r.status_code==200: return {"ok":True,"source":"Binance Public REAL","price":float(r.json()["price"]),"note":"MEXC وقع - Binance بديل"}
-    except Exception: pass
-    return {"ok":False,"source":"NONE","note":"كل المصادر فشلت"}
-def lab_get_price_real(symbol="BTCUSDT"): return lab_fetch_real_source(symbol)
-def lab_get_klines(symbol="BTCUSDT", interval="15m", limit=200):
-    p=api_json("https://api.mexc.com/api/v3/klines", {"symbol":symbol,"interval":interval,"limit":limit})
-    if not isinstance(p,list) or len(p)<30: return None
-    f=pd.DataFrame(p, columns=["ot","open","high","low","close","vol","ct","qav"])
-    for col in ("open","high","low","close","vol"): f[col]=pd.to_numeric(f[col], errors="coerce")
-    return f.dropna().reset_index(drop=True)
-def lab_candle_patterns(frame):
-    if frame is None or len(frame)<5: return []
-    out=[]; last=frame.iloc[-1]; prev=frame.iloc[-2]
-    o,h,l,c=safe_float(last["open"]),safe_float(last["high"]),safe_float(last["low"]),safe_float(last["close"])
-    po,ph,pl,pc=safe_float(prev["open"]),safe_float(prev["high"]),safe_float(prev["low"]),safe_float(prev["close"])
-    body=abs(c-o); up=h-max(o,c); down=min(o,c)-l; rng=h-l if h>l else 1
-    if c>o and c>=po and o<=pc and body>abs(pc-po)*1.2: out.append("Engulfing صاعد")
-    if c<o and c<=po and o>=pc and body>abs(pc-po)*1.2: out.append("Engulfing هابط")
-    if down>body*2 and down/rng>0.5: out.append("Hammer / Pin Bar صاعد")
-    if up>body*2 and up/rng>0.5: out.append("Shooting Star / Pin Bar هابط")
-    if h<=ph and l>=pl: out.append("Inside Bar")
-    if h>=ph and l<=pl: out.append("Outside Bar")
-    if up>body*1.5: out.append("Wick Rejection فوق")
-    if down>body*1.5: out.append("Wick Rejection تحت")
-    if l<safe_float(frame["low"].iloc[-6:-1].min()) and c>safe_float(frame["low"].iloc[-6:-1].min()): out.append("Liquidity Sweep صاعد")
-    if h>safe_float(frame["high"].iloc[-6:-1].max()) and c<safe_float(frame["high"].iloc[-6:-1].max()): out.append("Liquidity Sweep هابط")
-    if not out: out.append("لا يوجد نموذج واضح")
-    return out
-def lab_volume(frame):
-    if frame is None or len(frame)<21: return {"vol_x":1,"state":"غير متاح"}
-    vol=safe_float(frame["vol"].iloc[-1]); avg=safe_float(frame["vol"].iloc[-21:-1].mean()); prev_avg=safe_float(frame["vol"].iloc[-42:-21].mean()) if len(frame)>=42 else avg
-    vx=vol/avg if avg>0 else 1; accel=(avg-prev_avg)/prev_avg*100 if prev_avg>0 else 0
-    chg=(safe_float(frame["close"].iloc[-1])-safe_float(frame["close"].iloc[-6]))/safe_float(frame["close"].iloc[-6])*100 if safe_float(frame["close"].iloc[-6]) else 0
-    div="Volume Divergence هابط" if chg>0 and vx<0.8 else ("Volume Divergence صاعد" if chg<0 and vx<0.8 else "لا يوجد Divergence")
-    state="Volume Explosion" if vx>1.8 else ("Accumulation" if vx>1.2 and chg>-0.3 else ("Distribution" if vx>1.2 and chg<0.3 else "عادي"))
-    return {"vol_x":round(vx,2),"accel_pct":round(accel,1),"chg_5":round(chg,2),"divergence":div,"state":state}
-def lab_orderbook(symbol="BTCUSDT"):
-    p=api_json("https://api.mexc.com/api/v3/depth", {"symbol":symbol,"limit":20})
-    if not isinstance(p,dict): return {"imbalance":0,"note":"غير متاح"}
-    bids=p.get("bids",[]); asks=p.get("asks",[])
-    if not bids or not asks: return {"imbalance":0,"note":"فارغ"}
-    bv=sum(safe_float(q)*safe_float(pr) for pr,q in bids); av=sum(safe_float(q)*safe_float(pr) for pr,q in asks)
-    imb=(bv-av)/(bv+av)*100 if bv+av>0 else 0
-    max_bid=max(bids, key=lambda x:safe_float(x[0])*safe_float(x[1])); max_ask=max(asks, key=lambda x:safe_float(x[0])*safe_float(x[1]))
-    wall="جدار شراء" if safe_float(max_bid[0])*safe_float(max_bid[1])>safe_float(max_ask[0])*safe_float(max_ask[1])*1.5 else ("جدار بيع" if safe_float(max_ask[0])*safe_float(max_ask[1])>safe_float(max_bid[0])*safe_float(max_bid[1])*1.5 else "لا يوجد جدار بارز")
-    return {"imbalance":round(imb,1),"bid_notional":round(bv,0),"ask_notional":round(av,0),"wall":wall,"note":"MEXC Spot Depth"}
-def lab_futures(symbol="BTCUSDT"):
-    fund=get_binance_funding(symbol); oi_ch,oi_val=get_binance_oi_change(symbol)
-    sq="Short Squeeze محتمل" if fund is not None and fund<-0.05 else ("Long Squeeze محتمل" if fund is not None and fund>0.05 else "لا يوجد Squeeze واضح")
-    return {"funding_pct":round(fund,4) if fund is not None else None,"oi_change_pct":round(oi_ch,2) if oi_ch is not None else None,"squeeze":sq,"note":"Binance Futures مساعد"}
-def lab_orderflow(symbol="BTCUSDT"):
-    p=api_json("https://api.mexc.com/api/v3/trades", {"symbol":symbol,"limit":100})
-    if not isinstance(p,list) or not p: return {"delta":0,"cvd":0,"note":"غير متاح"}
-    buy_v=sell_v=0; cvd=0
-    for t in p:
-        q=safe_float(t.get("qty", t.get("quantity",0)))
-        if t.get("isBuyerMaker", False): sell_v+=q; cvd-=q
-        else: buy_v+=q; cvd+=q
-    delta=buy_v-sell_v
-    return {"buy_vol":round(buy_v,3),"sell_vol":round(sell_v,3),"delta":round(delta,3),"real_cvd":round(cvd,3),"aggressive":"Aggressive Buying" if delta>0 else "Aggressive Selling"}
-def lab_indicators(frame):
-    if frame is None or len(frame)<50: return {}
-    c=frame["close"]
-    def ema(s,n): return s.ewm(span=n, adjust=False).mean()
-    e9=ema(c,9).iloc[-1]; e21=ema(c,21).iloc[-1]; e50=ema(c,50).iloc[-1]
-    diff=c.diff().dropna(); g=diff[diff>0].mean() if len(diff[diff>0]) else 0; l=-diff[diff<0].mean() if len(diff[diff<0]) else 0.001
-    rsi=100-(100/(1+(g/l if l else 100))); macd=ema(c,12).iloc[-1]-ema(c,26).iloc[-1]; sig=ema(ema(c,12)-ema(c,26),9).iloc[-1]
-    tr=(frame["high"]-frame["low"]).tail(14).mean(); ma=c.tail(20).mean(); sd=c.tail(20).std(); up=ma+2*sd; dn=ma-2*sd
-    vwap=(frame["close"]*frame["vol"]).tail(20).sum()/frame["vol"].tail(20).sum() if frame["vol"].tail(20).sum()>0 else c.iloc[-1]
-    adx=min(100, abs((safe_float(c.iloc[-1])-safe_float(c.iloc[-15]))/safe_float(c.iloc[-15])*100)*10) if safe_float(c.iloc[-15]) else 0
-    sup=safe_float(frame["low"].tail(50).min()); res=safe_float(frame["high"].tail(50).max()); fib38=res-(res-sup)*0.382; fib61=res-(res-sup)*0.618
-    return {"ema9":round(e9,2),"ema21":round(e21,2),"ema50":round(e50,2),"rsi":round(float(rsi),1),"macd":round(float(macd),2),"macd_signal":round(float(sig),2),"atr":round(float(tr),2),"bb_up":round(float(up),2),"bb_dn":round(float(dn),2),"bb_mid":round(float(ma),2),"vwap":round(float(vwap),2),"adx_proxy":round(float(adx),1),"support":round(sup,2),"resistance":round(res,2),"fib382":round(fib38,2),"fib618":round(fib61,2),"momentum":round(float(c.iloc[-1]-c.iloc[-10]),2),"roc_pct":round(float((c.iloc[-1]-c.iloc[-10])/c.iloc[-10]*100),2)}
-def lab_regime(frame, ind):
-    if not ind: return "غير معروف"
-    chg=ind.get("roc_pct",0); adx=ind.get("adx_proxy",0)
-    if adx>25 and chg>1: return "Bullish Trend"
-    if adx>25 and chg<-1: return "Bearish Trend"
-    if adx<15: return "Sideways / Low Volatility"
-    if abs(chg)>3: return "High Volatility / Breakout"
-    return "Sideways"
-def lab_correlation():
-    btc=lab_get_klines("BTCUSDT","15m",50); eth=lab_get_klines("ETHUSDT","15m",50)
-    if btc is None or eth is None: return {"btc_eth_corr":None,"note":"غير متاح"}
-    try:
-        corr=btc["close"].tail(30).corr(eth["close"].tail(30)); return {"btc_eth_corr":round(float(corr),2),"btc_change_15m":round(float((btc["close"].iloc[-1]-btc["close"].iloc[-2])/btc["close"].iloc[-2]*100),3),"eth_change_15m":round(float((eth["close"].iloc[-1]-eth["close"].iloc[-2])/eth["close"].iloc[-2]*100),3)}
-    except Exception: return {"btc_eth_corr":None,"note":"خطأ"}
-def lab_features_vector(frame, ind, vol, ob, flow, fut):
-    if frame is None or ind=={}: return None
-    last=frame.iloc[-1]
-    return {"price":safe_float(last["close"]),"rsi":ind.get("rsi",50),"macd":ind.get("macd",0),"ema_diff":ind.get("ema9",0)-ind.get("ema21",0),"atr_pct":ind.get("atr",0)/safe_float(last["close"])*100 if safe_float(last["close"]) else 0,"vol_x":vol.get("vol_x",1),"ob_imb":ob.get("imbalance",0),"flow_delta":flow.get("delta",0),"funding":fut.get("funding_pct") or 0,"oi_ch":fut.get("oi_change_pct") or 0,"pos_20":(safe_float(last["close"])-safe_float(frame["low"].tail(20).min()))/(safe_float(frame["high"].tail(20).max())-safe_float(frame["low"].tail(20).min())+1e-9)*100,"chg3":(safe_float(last["close"])-safe_float(frame["close"].iloc[-4]))/safe_float(frame["close"].iloc[-4])*100 if safe_float(frame["close"].iloc[-4]) else 0}
-def lab_backtest_1000():
-    import datetime as _dt
-    lab_init_db(); f=lab_get_klines("BTCUSDT","15m",1000)
-    if f is None or len(f)<100: return {"ok":False,"note":"تعذر جلب 1000 شمعة"}
-    saved=0; ups=0
-    for i in range(60, len(f)-1):
-        try:
-            w=f.iloc[:i+1].copy(); ind=lab_indicators(w); vol=lab_volume(w); ob={"imbalance":0}; fut={"funding_pct":0,"oi_change_pct":0}; flow={"delta":0}; feats=lab_features_vector(w,ind,vol,ob,flow,fut)
-            if feats is None: continue
-            feats["backtest_idx"]=i; label="UP" if float(f["close"].iloc[i+1])>float(f["open"].iloc[i+1]) else "DOWN"
-            if label=="UP": ups+=1
-            mins_ago=(len(f)-1-i)*15; rs_dt=_dt.datetime.now(_dt.timezone.utc)-_dt.timedelta(minutes=mins_ago); rs=rs_dt.strftime("%Y-%m-%d %H:%M")
-            with sqlite3.connect(LAB_DB) as _c: _c.execute("INSERT OR REPLACE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs, json.dumps(feats), label))
-            saved+=1
-        except Exception: continue
-    return {"ok":True,"saved":saved,"up":ups,"down":saved-ups,"up_rate":round(ups/saved*100,1) if saved else 0,"note":"Labels PROXY من اغلاق الشمعة - مش التسوية الرسمية"}
-def lab_auto_learn():
-    lab_init_db()
-    try:
-        with sqlite3.connect(LAB_DB) as _c: n=_c.execute("SELECT COUNT(*) FROM lab_features WHERE label IN ('UP','DOWN')").fetchone()[0]
-    except Exception: n=0
-    if n<100:
-        res=lab_backtest_1000()
-        if res.get("ok"): return {"auto":True,"backtest":res,"train":lab_train_model()}
-        return {"auto":True,"backtest":res,"train":{"ok":False}}
-    return lab_self_evolve()
-def lab_self_evolve():
-    lab_init_db()
-    with sqlite3.connect(LAB_DB) as _c:
-        total=_c.execute("SELECT COUNT(*) FROM lab_features WHERE label IN ('UP','DOWN')").fetchone()[0]; models=_c.execute("SELECT version,test_acc FROM lab_models ORDER BY created_at DESC LIMIT 1").fetchall()
-    old_acc=models[0][1] if models else 0
-    with sqlite3.connect(LAB_DB) as _c: last=_c.execute("SELECT train_n FROM lab_models ORDER BY created_at DESC LIMIT 1").fetchall()
-    last_n=last[0][0] if last else 0
-    if total-last_n>=20:
-        new=lab_train_model()
-        if new.get("ok"):
-            if new.get("test_acc",0)<old_acc*100:
-                with sqlite3.connect(LAB_DB) as _c:
-                    _c.execute("UPDATE lab_models SET is_active=0 WHERE version=?", (new.get("version"),))
-                    if models: _c.execute("UPDATE lab_models SET is_active=1 WHERE version=?", (models[0][0],))
-                    _c.commit()
-                return {"evolved":False,"reason":f"الجديد {new.get('test_acc')}% اوحش من القديم {old_acc*100:.1f}%","total":total}
-            return {"evolved":True,"new_acc":new.get("test_acc"),"old_acc":old_acc*100,"total":total}
-    return {"evolved":False,"reason":f"عندك {total} جولة - اخر تدريب {last_n} - استنى 20","total":total}
-def lab_backfill_features(round_start_str):
-    try:
-        f=lab_get_klines("BTCUSDT","15m",500)
-        if f is None: return None
-        ind=lab_indicators(f); vol=lab_volume(f); ob=lab_orderbook("BTCUSDT"); fut=lab_futures("BTCUSDT"); flow=lab_orderflow("BTCUSDT"); feats=lab_features_vector(f,ind,vol,ob,flow,fut)
-        if feats is not None: feats["backfilled_for"]=round_start_str; feats["source"]="BACKFILL_KLINES"
-        return feats
-    except Exception: return None
-def lab_similarity(current, history):
-    if not history or not current: return {"similar_n":0,"up_rate":None,"note":"لا ذاكرة"}
-    keys=["rsi","vol_x","ob_imb","ema_diff","chg3","pos_20"]; sims=[]
-    for feats,label in history:
-        try:
-            d=sum((float(current.get(k,0))-float(feats.get(k,0)))**2 for k in keys); sim=1/(1+math.sqrt(d)/100); sims.append((sim,label))
-        except Exception: continue
-    sims=sorted(sims, reverse=True)[:50]
-    if len(sims)<10: return {"similar_n":len(sims),"up_rate":None,"note":"ذاكرة قليلة"}
-    ups=sum(1 for _,lb in sims if lb=="UP"); return {"similar_n":len(sims),"up_rate":round(ups/len(sims)*100,1),"top_sim":round(sims[0][0],2) if sims else 0}
-def lab_train_model():
-    lab_init_db()
-    try:
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.metrics import brier_score_loss, log_loss
-    except Exception as e: return {"ok":False,"note":f"sklearn غير متاح: {e}"}
-    with sqlite3.connect(LAB_DB) as conn: rows=conn.execute("SELECT feats,label FROM lab_features WHERE label IN ('UP','DOWN') ORDER BY round_start").fetchall()
-    if len(rows)<40: return {"ok":False,"note":f"بيانات قليلة: {len(rows)} - المطلوب 40+"}
-    X=[]; y=[]
-    for fs,lb in rows:
-        try:
-            f=json.loads(fs); X.append([f.get(k,0) for k in ["rsi","macd","ema_diff","atr_pct","vol_x","ob_imb","flow_delta","funding","oi_ch","pos_20","chg3"]]); y.append(1 if lb=="UP" else 0)
-        except Exception: continue
-    n=len(X); split=int(n*0.8); Xtr,ytr=X[:split],y[:split]; Xte,yte=X[split:],y[split:]
-    from sklearn.ensemble import RandomForestClassifier
-    clf=RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1); clf.fit(Xtr,ytr)
-    prob=clf.predict_proba(Xte)[:,1] if len(set(yte))>1 else [0.5]*len(Xte); pred=(np.array(prob)>=0.5).astype(int); acc=float((pred==np.array(yte)).mean()) if yte else 0
-    try: bl=float(brier_score_loss(yte, prob)) if len(set(yte))>1 else 1
-    except Exception: bl=1
-    try: ll=float(log_loss(yte, prob, labels=[0,1])) if len(set(yte))>1 else 1
-    except Exception: ll=1
-    ver=f"RF-{int(time.time())}"
-    with sqlite3.connect(LAB_DB) as conn:
-        conn.execute("INSERT OR REPLACE INTO lab_models VALUES (?,?,?,?,?,?)", (ver, datetime.now(timezone.utc).isoformat(), n, acc, bl, ll, 1)); conn.execute("UPDATE lab_models SET is_active=0 WHERE version!=?", (ver,)); conn.commit()
-    import pickle, os as _os2; _os2.makedirs("lab_models", exist_ok=True)
-    with open(f"lab_models/{ver}.pkl","wb") as f: pickle.dump(clf,f)
-    return {"ok":True,"version":ver,"train_n":n,"test_n":len(Xte),"test_acc":round(acc*100,1),"brier":round(bl,3),"logloss":round(ll,3)}
-def lab_predict_ensemble(feats, patterns, vol, ob, flow, regime, sim, ml_prob=None):
-    vu=0; vd=0; reasons=[]; counter=[]
-    if feats["rsi"]<35: vu+=2; reasons.append("RSI تشبع بيع")
-    if feats["rsi"]>65: vd+=2; reasons.append("RSI تشبع شراء")
-    if vol.get("vol_x",1)>1.5 and feats["chg3"]>0: vu+=1; reasons.append("Volume Explosion مع صعود")
-    if vol.get("vol_x",1)>1.5 and feats["chg3"]<0: vd+=1; reasons.append("Volume Explosion مع هبوط")
-    if ob.get("imbalance",0)>10: vu+=1; reasons.append("Bid Imbalance")
-    if ob.get("imbalance",0)<-10: vd+=1; reasons.append("Ask Imbalance")
-    if flow.get("delta",0)>0: vu+=1; reasons.append("Aggressive Buying")
-    if flow.get("delta",0)<0: vd+=1; reasons.append("Aggressive Selling")
-    if "Engulfing صاعد" in patterns or "Hammer / Pin Bar صاعد" in patterns: vu+=2; reasons.append("نموذج شموع صاعد")
-    if "Engulfing هابط" in patterns or "Shooting Star / Pin Bar هابط" in patterns: vd+=2; reasons.append("نموذج شموع هابط")
-    if "Liquidity Sweep صاعد" in patterns: vu+=1; reasons.append("Liquidity Sweep صاعد")
-    if "Liquidity Sweep هابط" in patterns: vd+=1; reasons.append("Liquidity Sweep هابط")
-    if sim.get("up_rate") is not None:
-        if sim["up_rate"]>60: vu+=1; reasons.append(f"تشابه: {sim['up_rate']}% صعود")
-        if sim["up_rate"]<40: vd+=1; reasons.append(f"تشابه: {100-sim['up_rate']}% هبوط")
-    tot=vu+vd
-    if tot==0: return {"pred":"NO_TRADE","prob":0.5,"votes_up":0,"votes_dn":0,"reasons":["أدلة غير كافية"],"counter":["لا توافق"],"regime":regime,"stage":"NO_TRADE","confidence":0}
-    ens=(vu/tot*0.6+ml_prob*0.4) if ml_prob is not None else vu/tot
-    pred="UP" if ens>=0.55 else ("DOWN" if ens<=0.45 else "NO_TRADE")
-    if pred=="UP": counter.append("احتمال Fakeout")
-    if pred=="DOWN": counter.append("احتمال Short Squeeze")
-    stage="CONFIRMED" if abs(ens-0.5)>0.2 and tot>=4 else ("EARLY SETUP" if abs(ens-0.5)>0.1 else "WATCH")
-    if pred=="NO_TRADE": stage="NO_TRADE"
-    conf=round(min(85, max(50, abs(ens-0.5)*100+tot*3+(10 if sim.get("similar_n",0)>=30 else 0))),1)
-    return {"pred":pred,"prob":round(float(ens),3),"votes_up":vu,"votes_dn":vd,"reasons":reasons,"counter":counter,"regime":regime,"stage":stage,"confidence":conf}
-def lab_risk(pred, prob, price, atr):
-    if pred=="NO_TRADE": return {"ev":0,"decision":"NO_TRADE","reason":"أدلة غير كافية"}
-    payout=0.8; ev=prob*payout-(1-prob)*1; dec="TRADE" if ev>0 and prob>=0.58 else "NO_TRADE"
-    return {"ev":round(ev,3),"payout_assumed":payout,"breakeven":round(1/(1+payout),3),"decision":dec,"reason":"EV موجب" if ev>0 else "EV سالب","expected_range":[round(price-atr,2), round(price+atr,2)]}
+def options_analysis(symbol="BTC"):
+    return {"IV":"N/A - لا يوجد مصدر خيارات مجاني متاح في هذا الإصدار","OI":"N/A","Strikes":"N/A","Greeks":"N/A - Delta/Gamma/Theta/Vega تحتاج مصدر خيارات مرخص","note":"N/A"}
 
-# ---------------- القسم الجديد المضاف: SCAN ALL + PREDICTION LAB المعتدل - من غير ما يتشال حاجه ----------------
-def scan_all_coins(platform, direction, min_score, max_coins):
-    # يفحص كل عملات المنصة - مش عملة واحدة - بكل الادوات - ونفس منطق TP/SL الجديد
-    import time as _t
-    results=[]
-    if platform=="BINANCE": syms=get_binance_symbols(max_coins)
-    elif platform=="KUCOIN": syms=get_kucoin_symbols(max_coins)
-    else: syms=get_binance_symbols(max_coins)
-    prog=st.progress(0); status=st.empty()
-    for idx,sym in enumerate(syms):
-        prog.progress((idx+1)/max(len(syms),1)); status.caption(f"يفحص {sym} ({idx+1}/{len(syms)})")
-        try:
-            frame=get_kucoin_klines(sym) if platform=="KUCOIN" else get_binance_klines(sym)
-            if frame is None: continue
-            # نستخدم analyze الاصلي - هو اللي فيه TP/SL الجديد
-            s_settings={"want_long": direction=="LONG", "want_short": direction=="SHORT", "use_fvg": False, "btc_filter": True, "funding_filter": False, "wall_filter": False, "killzone": True, "confirm_exchanges": False, "min_score": min_score}
-            sig, reason = analyze(frame, sym, s_settings)
-            if sig: results.append(sig)
-        except Exception: continue
-        _t.sleep(0.05)
-    prog.empty(); status.empty()
-    return sorted(results, key=lambda x: x["score"], reverse=True)
-
-
-# ===== Early Move Detector - يكشف العملة قبل الانطلاق - مش بعد ما تطلع =====
-
-# ===== سوق التوقعات - هو اللي يكتشف العملة والحركه لوحده - انت متختارش حاجة =====
-# MEXC Prediction بيشتغل على BTC اساسا - وبعدين ETH / SOL - فالمحرك بيفحصهم كلهم لوحده
-# وبيقولك: العملة دي UP - والعملة دي DOWN - من غير ما تختار
-PREDICTION_COINS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT"]
-def lab_auto_detect_prediction_coin():
-    # بيفحص عملات سوق التوقعات كلها لوحده - بمنطق Early - ويرتبهم
-    out = []
-    for sym in PREDICTION_COINS:
-        try:
-            fr = lab_get_klines(sym, "15m", 100)
-            if fr is None: continue
-            r = early_move_analyze(fr, sym)
-            if r and not r.get("rejected"):
-                # تحويل لـ Prediction: UP لو PUMP اعلى - DOWN لو DUMP اعلى
-                if r["early_pump"] >= r["early_dump"] and r["early_pump"]>=40:
-                    out.append({"symbol":sym,"pred":"UP","score":r["early_pump"],"price":r["price"],"dir15":r["dir15"],"quality":r["quality"],"reasons":r["pump_reasons"],"cvd":r["cvd"]})
-                elif r["early_dump"]>r["early_pump"] and r["early_dump"]>=40:
-                    out.append({"symbol":sym,"pred":"DOWN","score":r["early_dump"],"price":r["price"],"dir15":r["dir15"],"quality":r["quality"],"reasons":r["dump_reasons"],"cvd":r["cvd"]})
-        except Exception: continue
-    out = sorted(out, key=lambda x: x["score"], reverse=True)
-    return out
-
-def early_move_analyze(frame, symbol):
+def football_analysis(home, away, home_odds, draw_odds, away_odds):
     try:
-        if frame is None or len(frame) < 50: return None
-        closes = frame["close"]; vols = frame["vol"]
-        last = float(closes.iloc[-1]); prev = float(closes.iloc[-2])
-        ch_1h = (last - prev)/prev*100 if prev else 0
-        if abs(ch_1h) > 3: return {"symbol":symbol,"rejected":True,"reason":f"طار خلاص {ch_1h:.2f}% - مش Early"}
-        ma20 = closes.tail(20).mean(); sd20 = closes.tail(20).std()
-        bb_width = (2*sd20)/ma20*100 if ma20 else 99
-        squeeze = bb_width < 1.2
-        v_last3 = vols.tail(3).mean(); v_prev10 = vols.iloc[-13:-3].mean()
-        vol_build = v_last3 / v_prev10 if v_prev10>0 else 1
-        vol_building = vol_build > 1.3
-        cvd = candle_volume_delta_proxy(frame, lookback=20)
-        hi50 = float(frame["high"].tail(50).max()); lo50 = float(frame["low"].tail(50).min())
-        pos50 = (last-lo50)/(hi50-lo50)*100 if hi50!=lo50 else 50
-        rsi_v = mexc_rsi(closes.tail(15))
-        rsi_ready = 35 <= rsi_v <= 65
-        bodies = [abs(float(frame["close"].iloc[i])-float(frame["open"].iloc[i]))/float(frame["close"].iloc[i])*100 for i in range(len(frame)-5, len(frame))]
-        avg_body = sum(bodies)/len(bodies) if bodies else 1
-        quiet = avg_body < 0.4
-        pump = 0; pump_reasons=[]
-        if squeeze: pump+=25; pump_reasons.append("انضغاط Bollinger - انفجار قرب")
-        if vol_building and cvd>5: pump+=25; pump_reasons.append(f"حجم بيبني x{vol_build:.2f} + CVD شراء +{cvd:.1f}%")
-        elif vol_building: pump+=10; pump_reasons.append(f"حجم بيبني x{vol_build:.2f}")
-        if pos50 < 30: pump+=15; pump_reasons.append(f"عند القاع {pos50:.0f}% - مكان تجميع")
-        if rsi_ready and cvd>0: pump+=10; pump_reasons.append("RSI محايد + ضغط شراء")
-        if quiet: pump+=10; pump_reasons.append("شموع هادية - تردد قبل الانطلاق")
-        if 0 < ch_1h < 1.5: pump+=5; pump_reasons.append("بداية تحرك خفيف لفوق")
-        dump = 0; dump_reasons=[]
-        if squeeze: dump+=25; dump_reasons.append("انضغاط Bollinger - انفجار قرب")
-        if vol_building and cvd<-5: dump+=25; dump_reasons.append(f"حجم بيبني x{vol_build:.2f} + CVD بيع {cvd:.1f}%")
-        elif vol_building: dump+=10; dump_reasons.append(f"حجم بيبني x{vol_build:.2f}")
-        if pos50 > 70: dump+=15; dump_reasons.append(f"عند القمة {pos50:.0f}% - مكان تصريف")
-        if rsi_ready and cvd<0: dump+=10; dump_reasons.append("RSI محايد + ضغط بيع")
-        if quiet: dump+=10; dump_reasons.append("شموع هادية - تردد قبل الانطلاق")
-        if -1.5 < ch_1h < 0: dump+=5; dump_reasons.append("بداية تحرك خفيف لتحت")
-        if cvd > 10 and pos50 < 60: dir15="UP"; dir_conf=min(85, 55+abs(cvd)*0.8)
-        elif cvd < -10 and pos50 > 40: dir15="DOWN"; dir_conf=min(85, 55+abs(cvd)*0.8)
-        elif cvd > 3: dir15="UP"; dir_conf=55
-        elif cvd < -3: dir15="DOWN"; dir_conf=55
-        else: dir15="SIDEWAYS"; dir_conf=50
-        best = max(pump, dump)
-        quality = "ممتازة 🔥" if best>=70 else ("جيدة ✅" if best>=55 else ("متوسطة ⚠️" if best>=40 else "ضعيفة"))
-        return {"symbol":symbol,"rejected":False,"price":round(last,8),"ch_1h":round(ch_1h,2),"bb_width":round(bb_width,2),"vol_build":round(vol_build,2),"cvd":round(cvd,1),"pos50":round(pos50,1),"rsi":round(rsi_v,1),"early_pump":pump,"early_dump":dump,"pump_reasons":pump_reasons,"dump_reasons":dump_reasons,"dir15":dir15,"dir_conf":round(dir_conf,1),"quality":quality,"quality_score":best,"squeeze":squeeze,"vol_building":vol_building}
-    except Exception: return None
+        ph=1/float(home_odds); pd_=1/float(draw_odds); pa=1/float(away_odds); tot=ph+pd_+pa
+        return {"home":round(ph/tot*100,1),"draw":round(pd_/tot*100,1),"away":round(pa/tot*100,1),"note":"احتمالات ضمنية من الأودز بعد إزالة هامش الوسيط - تحليل فقط، لا يوجد تنفيذ مراهنات تلقائية"}
+    except: return {"home":"N/A","draw":"N/A","away":"N/A","note":"ادخل أودز صحيحة"}
 
-lab_init_db()
-try: _auto=lab_auto_learn()
-except Exception: pass
-init_db()
-
-with st.sidebar:
-    st.markdown("## 🎛️ إعدادات الماسح")
-    platform = st.selectbox("المنصة", ["KUCOIN","BINANCE"])
-    st.caption("اتجاه الصفقة: النظام هو اللي بيقرر LONG ولا SHORT لوحده - انت متختارش")
-    want_long = True; want_short = True
-    use_fvg = st.checkbox("FVG", value=False); btc_filter = st.checkbox("فلتر اتجاه BTC", value=True)
-    funding_filter = st.checkbox("فلتر Funding (Binance Futures)", value=False); wall_filter = st.checkbox("دفتر أوامر Binance", value=False)
-    killzone = st.checkbox("عرض نوافذ السيولة التقريبية", value=True); confirm_exchanges = st.checkbox("فحص توافر الرمز على 5 منصات Spot", value=False)
-    min_score = st.slider("أقل Score", 0, 95, 55); limit_coins = st.slider("عدد العملات للفحص", 10, 100, 40, step=5)
-    telegram_enabled = st.checkbox("إرسال أفضل الإشارات إلى Telegram", value=False)
-    if st.button("📡 اختبار Telegram"):
-        ok,msg=send_telegram("🧪 اختبار BLY7H V19 — اتصال Telegram يعمل."); st.success(msg) if ok else st.error(msg)
-settings={"want_long":want_long,"want_short":want_short,"use_fvg":use_fvg,"btc_filter":btc_filter,"funding_filter":funding_filter,"wall_filter":wall_filter,"killzone":killzone,"confirm_exchanges":confirm_exchanges,"min_score":min_score}
-section = st.radio("القسم", ["🔎 الماسح","📉 DUMP / SHORT","🚀 DEX","📊 سجل الإشارات","🧪 اختبار تاريخي","🟢 MEXC Learner","🧪 MEXC PREDICTION LAB - V20","🔍 SCAN ALL - فحص كل العملات","🎯 PREDICTION LAB المعتدل - سوق التوقعات"], horizontal=True)
-if section in ("🔎 الماسح","📉 DUMP / SHORT"):
-    is_dump=section=="📉 DUMP / SHORT"
-    st.subheader("📉 ماسح SHORT" if is_dump else "🔎 ماسح السوق"); st.caption(f"المصدر: {platform} | العملات: {limit_coins} | أقل Score: {min_score} | توقيت القاهرة: {now_cairo().strftime('%H:%M')}")
-    if st.button("📉 افحص فرص SHORT" if is_dump else "🔍 افحص السوق الآن", type="primary"):
-        syms=get_kucoin_symbols(limit_coins) if platform=="KUCOIN" else get_binance_symbols(limit_coins); st.info(f"تم العثور على {len(syms)} رمزًا للفحص.")
-        signals=[]; debug=[]; prog=st.progress(0); status=st.empty()
-        for idx,sym in enumerate(syms):
-            prog.progress((idx+1)/max(len(syms),1)); status.caption(f"يفحص {sym} ({idx+1}/{len(syms)})")
-            frame=get_kucoin_klines(sym) if platform=="KUCOIN" else get_binance_klines(sym)
-            if frame is not None:
-                sig,reason=analyze(frame,sym,settings)
-                if sig and (not is_dump or sig["type"]=="SHORT"): signals.append(sig)
-                elif len(debug)<15: debug.append({"العملة":sym,"السبب":reason})
-            else:
-                if len(debug)<15: debug.append({"العملة":sym,"السبب":"تعذر جلب الشموع"})
-            time.sleep(0.08)
-        prog.empty(); status.empty(); signals.sort(key=lambda x:x["score"], reverse=True)
-        if signals:
-            save_signals(signals, platform); st.success(f"تم العثور على {len(signals)} إشارة.")
-            if telegram_enabled: send_signal_batch(signals)
-            for sig in signals:
-                with st.container(border=True):
-                    l,r=st.columns([4,1])
-                    with l: st.markdown(f"### {'🚀' if sig['type']=='LONG' else '📉'} {sig['symbol']} — {sig['type']}"); st.write(f"السعر: **{sig['price']}** | تغير الساعة: **{sig['ch']}%** | Volume: **x{sig['vol']}** | CVD: **{sig['buy']}%**")
-                    with r: st.metric("Score", f"{sig['score']}/100")
-                    a,b,c,d=st.columns(4); a.metric("الدخول - لحظي", sig["entry"]); b.metric("الاستوب - نقطة اللاعودة", sig["stop"]); c.metric("TP1", sig["tp1"]); d.metric("TP2", sig["tp2"])
-                    st.markdown(f"**TP3 رنر:** {sig.get('tp3','-')} | **نقطة اللاعودة:** {sig.get('no_return','-')} - {sig.get('nr_reason','')}")
-                    with st.expander("تفاصيل التحليل"): st.text(sig["extra"])
-        else: st.warning("لم تظهر إشارات مطابقة.")
-        if debug:
-            with st.expander("أسباب استبعاد بعض العملات"): st.dataframe(pd.DataFrame(debug), use_container_width=True)
-elif section=="🚀 DEX":
-    st.subheader("🚀 ماسح DEX — BNB Smart Chain"); st.caption("حجم 5 دقائق ≥ 5,000$، تغير ≥ 5%، سيولة ≥ 15,000$.")
-    if st.button("🚀 افحص DEX الآن", type="primary"):
-        ds=scan_dex()
-        if not ds: st.info("لا توجد أزواج مطابقة.")
-        for item in ds:
-            with st.container(border=True):
-                st.markdown(f"### 🚀 {item['symbol']}"); st.write(f"السعر: ${item['price']:.10g} | تغير 5 دقائق: {item['change_5m']:.2f}% | حجم 5 دقائق: ${item['volume_5m']:,.0f} | السيولة: ${item['liquidity']:,.0f}")
-                if item["url"]: st.markdown(f"[فتح الزوج على DexScreener]({item['url']})")
-                if telegram_enabled:
-                    ok,err=send_telegram(f"🚀 DEX {item['symbol']} على BSC\nالسعر: ${item['price']:.10g}\nتغير 5m: {item['change_5m']:.2f}%\nحجم 5m: ${item['volume_5m']:,.0f}\nالسيولة: ${item['liquidity']:,.0f}\n{item['url']}\n@WHYNOTBLY7")
-                    if not ok: st.warning(f"تعذر إرسال {item['symbol']}: {err}")
-elif section=="📊 سجل الإشارات":
-    st.subheader("📊 سجل الإشارات المحفوظ"); hist=load_signal_history(200)
-    if hist.empty: st.info("لا توجد إشارات محفوظة بعد.")
-    else: st.dataframe(hist, use_container_width=True, hide_index=True); st.caption("السجل يحفظ الإشارات الصادرة فقط.")
-elif section=="🧪 اختبار تاريخي":
-    st.subheader("🧪 اختبار تاريخي مبسط — Binance"); ts=st.selectbox("العملة", ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"])
-    if st.button("▶️ شغّل الاختبار", type="primary"):
-        frame=get_binance_klines(ts)
-        if frame is None or len(frame)<50: st.error("تعذر جلب بيانات كافية.")
+def backtest_simple(exchange, symbol, gran="1h", limit=500):
+    df=get_futures_klines(exchange, symbol, gran, limit)
+    if df is None or len(df)<60: return None
+    split=int(len(df)*0.7); train=df.iloc[:split]; test=df.iloc[split:]
+    wins=0; total=0; rrs=[]
+    for i in range(1,len(test)-1):
+        window=pd.concat([train, test.iloc[:i]])
+        e9=ema(window["close"],9); e21=ema(window["close"],21)
+        if len(e9)<2: continue
+        is_long=e9.iloc[-1]>e21.iloc[-1]
+        entry=float(test.iloc[i]["close"]); nxt=float(test.iloc[i+1]["close"])
+        a=atr_calc(window); a_last=float(a.iloc[-1]) if pd.notna(a.iloc[-1]) else entry*0.01
+        if is_long:
+            if nxt>=entry+1.5*a_last: wins+=1; rrs.append(1.5)
+            elif nxt<=entry-1.5*a_last: rrs.append(-1)
+            total+=1
         else:
-            wins=losses=unres=0; trades=[]
-            for idx in range(25, len(frame)-5):
-                hf=frame.iloc[:idx+1].copy(); proxy=candle_volume_delta_proxy(hf)
-                if abs(proxy)<20: continue
-                ep=safe_float(frame["close"].iloc[idx]); side="LONG" if proxy>0 else "SHORT"; sp=ep*(0.98 if side=="LONG" else 1.02); tp=ep*(1.03 if side=="LONG" else 0.97); out="UNRESOLVED"; fut=frame.iloc[idx+1:idx+6]
-                for _,cand in fut.iterrows():
-                    hi,lo=safe_float(cand["high"]),safe_float(cand["low"]); hs=lo<=sp if side=="LONG" else hi>=sp; ht=hi>=tp if side=="LONG" else lo<=tp
-                    if hs: out="LOSS"; break
-                    if ht: out="WIN"; break
-                if out=="WIN": wins+=1
-                elif out=="LOSS": losses+=1
-                else: unres+=1
-                trades.append({"index":idx,"side":side,"entry":ep,"outcome":out})
-            tot=wins+losses; wr=wins/tot*100 if tot else 0
-            c1,c2,c3,c4=st.columns(4); c1.metric("الإشارات", len(trades)); c2.metric("رابحة", wins); c3.metric("خاسرة", losses); c4.metric("غير محسومة", unres); st.metric("نسبة الفوز", f"{wr:.1f}%")
-            if trades: st.dataframe(pd.DataFrame(trades), use_container_width=True)
-            st.caption("الاختبار يستخدم آخر 100 شمعة فقط، ولا يشمل رسوم أو انزلاق.")
-elif section=="🟢 MEXC Learner":
-    st.subheader("🟢 MEXC Learner - BTC 15min"); st.caption("بيتعلم من شموع MEXC نفسها - ادخل شراء = دوس ارتفاع / ادخل بيع = دوس هبوط")
-    if st.button("🟢 جيب توقع MEXC دلوقتي", type="primary"):
-        mf_frame=get_mexc_klines_15m(200)
-        if mf_frame is None: st.error("تعذر جلب شموع MEXC")
+            if nxt<=entry-1.5*a_last: wins+=1; rrs.append(1.5)
+            elif nxt>=entry+1.5*a_last: rrs.append(-1)
+            total+=1
+    if total==0: return None
+    wr=wins/total*100; avg_rr=sum(rrs)/len(rrs) if rrs else 0
+    return {"symbol":symbol,"timeframe":gran,"total":total,"win_rate":round(wr,1),"avg_rr":round(avg_rr,2),"train_len":len(train),"test_len":len(test)}
+
+st.markdown(f"**Killzone:** {'✅ '+killzone_status()[1] if killzone_status()[0] else '⏸️ '+killzone_status()[1]} | **البيانات:** Futures حقيقية من المنصة - Spot مفصول تمامًا | **آخر تحديث:** {now_cairo().strftime('%Y-%m-%d %H:%M:%S')} Cairo")
+section=st.sidebar.selectbox("القسم", ["🔍 Futures Scanner - KuCoin / MEXC / Bybit","📊 تحليل عملة - كل الفواصل","🎯 MEXC Prediction - UP/DOWN","📈 Options Analysis","⚽ Football Analysis","💾 Paper Trading + Backtest","📊 Performance Dashboard","🤖 MEXC Learner - بيعلم نفسه", "📩 Telegram Test"])
+st.sidebar.markdown("---"); st.sidebar.markdown("**BLY7TRADER SIGNALS**"); st.sidebar.caption("TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID في Secrets")
+
+if section.startswith("🔍"):
+    st.subheader("🔍 Futures Scanner - KuCoin / MEXC / Bybit - فصل تام عن Spot")
+    c1,c2,c3,c4=st.columns(4)
+    with c1: exch=st.selectbox("المنصة", ["KuCoin","MEXC","Bybit"])
+    with c2: n_sym=st.slider("عدد العملات", 20, 500, 500, step=10)
+    with c3: min_score=st.slider("أقل Score", 50, 85, 65)
+    with c4: side_f=st.selectbox("الاتجاه", ["الكل","LONG فقط","SHORT فقط"])
+    btc_df=get_futures_klines("KuCoin","XBTUSDTM","1h",100) if exch=="KuCoin" else None
+    btc_trend="NEUTRAL"
+    if btc_df is not None:
+        e9=ema(btc_df["close"],9); e21=ema(btc_df["close"],21)
+        btc_trend="UP" if e9.iloc[-1]>e21.iloc[-1] else "DOWN"
+    if st.button("🔍 امسح Futures دلوقتي", type="primary", use_container_width=True):
+        with st.spinner(f"بمسح {exch} Futures..."):
+            if exch=="KuCoin": syms=kucoin_futures_symbols(n_sym)
+            elif exch=="MEXC": syms=mexc_futures_symbols(n_sym)
+            else: syms=bybit_futures_symbols(n_sym)
+            results=[]; prog=st.progress(0)
+            for i,s in enumerate(syms):
+                prog.progress((i+1)/len(syms))
+                disp=s.replace("USDTM","/USDT").replace("_USDT","/USDT") if exch!="Bybit" else s.replace("USDT","/USDT")
+                if any(x in s for x in ["USDC","DAI"]): continue
+                r=analyze_futures(exch, s, disp, btc_trend)
+                if r and r["score"]>=min_score:
+                    if side_f=="LONG فقط" and r["type"]!="LONG": continue
+                    if side_f=="SHORT فقط" and r["type"]!="SHORT": continue
+                    results.append(r)
+            results=sorted(results, key=lambda x: x["score"], reverse=True)
+            st.session_state["fut_results"]=results; save_signals(results, exch)
+            if not results: st.warning(f"مسحنا {len(syms)} عملة - مفيش فرص واضحة فوق Score {min_score} - قلل Score لـ 55 وجرب تاني - الفرص الواضحة فقط بتظهر")
+    res=st.session_state.get("fut_results",[])
+    if res:
+        m1,m2,m3,m4=st.columns(4)
+        m1.metric("إجمالي الفرص", len(res))
+        m2.metric("LONG", sum(1 for x in res if x["type"]=="LONG"))
+        m3.metric("SHORT", sum(1 for x in res if x["type"]=="SHORT"))
+        m4.metric("أعلى Score", max(x["score"] for x in res))
+        st.markdown(f"### 🔥 أقوى {len(res)} إشارة")
+        df_show=pd.DataFrame([{"العملة":r["symbol"],"المنصة":r["exchange"],"الاتجاه":r["type"],"Score":r["score"],"السعر":r["price"],"الدخول":r["entry"],"الاستوب":r["stop"],"TP1":r["tp1"],"TP2":r["tp2"],"TP3":r["tp3"],"R:R TP2":r["rr2"],"1H%":r["ch"],"حجم":r["vol"],"CVD":r["buy"],"Funding":r["funding"]} for r in res])
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+        for r in res[:10]:
+            with st.expander(f"{r['symbol']} — {r['type']} — Score {r['score']} — دخول {r['entry']:.8g}"):
+                st.markdown(f"**الدخول:** {r['entry']:.8g} | **الاستوب - نقطة اللاعودة:** {r['stop']:.8g} | **TP1:** {r['tp1']:.8g} | **TP2:** {r['tp2']:.8g} | **TP3 رنر:** {r['tp3']:.8g} | **R:R:** TP1 1:{r['rr1']} TP2 1:{r['rr2']} TP3 1:{r['rr3']}")
+                st.text(r["extra"])
+                st.code(fmt_bly7trader(r), language="text")
+                if st.button(f"📩 ابعت {r['symbol']} لتليجرام", key=f"tg_{r['symbol']}_{r['type']}"):
+                    ok,msg=send_telegram(fmt_bly7trader(r)); st.success(msg) if ok else st.error(msg)
+        if st.button("📩 ابعت أقوى 5 لتليجرام"):
+            for r in res[:5]: send_telegram(fmt_bly7trader(r)); time.sleep(0.4)
+            st.success("تم إرسال أقوى 5")
+
+elif section.startswith("📊 تحليل"):
+    st.subheader("📊 تحليل عملة واحدة - كل الفواصل 1m / 3m / 5m / 15m / 1h - Futures فقط")
+    exch2=st.selectbox("المنصة", ["KuCoin","MEXC","Bybit"], key="ex2")
+    sym_in=st.text_input("العملة", "XBTUSDTM" if exch2=="KuCoin" else ("BTC_USDT" if exch2=="MEXC" else "BTCUSDT")).strip().upper()
+    if st.button("📊 حلل على كل الفواصل"):
+        for gran in ["1m","3m","5m","15m","1h"]:
+            df=get_futures_klines(exch2, sym_in, gran, 200)
+            if df is None: st.warning(f"{gran}: N/A - مفيش شموع"); continue
+            e9=ema(df["close"],9); e21=ema(df["close"],21); rr=rsi_calc(df["close"]); mm,ss,hh=macd_calc(df["close"]); aa=atr_calc(df)
+            st.markdown(f"**{gran}** — سعر `{float(df['close'].iloc[-1]):.8g}` | EMA9 `{float(e9.iloc[-1]):.8g}` | EMA21 `{float(e21.iloc[-1]):.8g}` | RSI `{float(rr.iloc[-1]):.1f}` | MACD Hist `{float(hh.iloc[-1]):.8g}` | ATR `{float(aa.iloc[-1]):.8g}` | Momentum `{float(momentum_calc(df['close']).iloc[-1]):.8g}` | FVG {len(detect_fvg(df))} | OB {detect_ob(df)} | BSL/SSL {detect_bsl_ssl(df)} | Sweep {detect_sweep(df)['dir']}")
+
+elif section.startswith("🎯"):
+    st.subheader("🎯 MEXC Prediction - UP / DOWN / NO_TRADE")
+    chk=mexc_prediction_check("BTCUSDT")
+    if chk["status"]=="CHAINLINK": st.success(chk["msg"])
+    else: st.warning(chk["msg"])
+    sym_p=st.text_input("العملة", "BTCUSDT", key="pred_sym")
+    if st.button("🔍 توقع الجولة الحالية"):
+        r=analyze_futures("KuCoin","XBTUSDTM","BTC/USDT","NEUTRAL")
+        if r is None: st.warning("NO_TRADE - مفيش إشارة واضحة")
         else:
-            mf=mexc_features(mf_frame); pred,reason,conf=mexc_predict(mf); c1,c2,c3,c4=st.columns(4); c1.metric("سعر BTC على MEXC", f"{mf['price']:,.2f}"); c2.metric("RSI", mf["rsi"]); c3.metric("Vol", f"x{mf['vol_x']}"); c4.metric("مكان السعر", f"{mf['pos']}%")
-            if pred=="ادخل شراء": st.success("✅ ادخل شراء - دوس ارتفاع في MEXC")
-            elif pred=="ادخل بيع": st.error("🔴 ادخل بيع - دوس هبوط في MEXC")
-            else: st.warning("⏸️ متدخلش")
-            st.write(f"السبب: {reason}"); st.write(f"الثقة: {conf}% | ويك: {mf['wick']} | شموع متتالية: {mf['streak']} | CVD: {mf['cvd']}")
-    if st.button("🧪 باك تست MEXC - 200 شمعة"):
-        mf2=get_mexc_klines_15m(200)
-        if mf2 is None: st.error("تعذر جلب شموع MEXC")
+            st.markdown(f"**Score:** {r['score']} | **FVG:** {r['fvg']} | **CVD:** {r['buy']}% | **الدخول:** {r['entry']:.8g} | **الاستوب:** {r['stop']:.8g}")
+            if r["score"]>=70 and r["fvg"]>0 and abs(r["buy"])>10:
+                st.success(f"توقع: {'🟢 UP - ادخل شراء' if r['type']=='LONG' else '🔴 DOWN - ادخل بيع'} - 3 شروط متوفرة")
+            else: st.warning("⏸️ NO_TRADE - شرط ناقص - المعتدل لا يدخل ناقص")
+
+
+elif section.startswith("🤖"):
+    st.subheader("🤖 MEXC Learner - بيعلم نفسه بنفسه")
+    st.markdown("### التعلم الذاتي")
+    if st.button("🧠 علم البوت من 1000 جولة سابقة دلوقتي", type="primary", use_container_width=True):
+        with st.spinner("بيتعلم من 1000 شمعة..."):
+            res_learn=lab_auto_learn("KuCoin","XBTUSDTM",1000)
+            st.success(f"اتعلم من {res_learn['learned']} جولة - الدقة: {res_learn['accuracy']}% على {res_learn['total']} جولة - {'نموذج جديد أفضل - تم الاحتفاظ به' if res_learn.get('is_best') else 'النموذج القديم أفضل - تم الاحتفاظ به'}")
+    with sqlite3.connect(DB_PATH) as _c:
+        try: _rows=_c.execute("SELECT created_at,accuracy,total,is_best FROM lab_models ORDER BY id DESC LIMIT 5").fetchall()
+        except: _rows=[]
+        try: _cnt=_c.execute("SELECT COUNT(*) FROM lab_rounds").fetchone()[0]
+        except: _cnt=0
+    st.markdown(f"**إجمالي الجولات المتعلمة:** {_cnt}")
+    if _rows:
+        for _r in _rows: st.markdown(f"- {_r[0][:19]} - دقة {_r[1]:.1f}% على {_r[2]} جولة - {'⭐ الأفضل' if _r[3] else ''}")
+    if st.button("🔍 توقع الجولة الحالية - بعد التعلم"):
+        pr=lab_predict_current("KuCoin","XBTUSDTM")
+        if pr is None: st.warning("N/A")
         else:
-            wins=played=0
-            for i in range(30, len(mf2)-1):
-                sub=mf2.iloc[:i+1].copy(); ff=mexc_features(sub); pp,_,_=mexc_predict(ff)
-                if pp=="متدخلش": continue
-                played+=1; nxt=safe_float(mf2["close"].iloc[i+1]); cur=safe_float(mf2["close"].iloc[i]); actual="ادخل شراء" if nxt>cur else "ادخل بيع"
-                if pp==actual: wins+=1
-            rate=wins/played*100 if played else 0; st.metric("نسبة نجاح باك تست MEXC", f"{rate:.1f}%"); st.write(f"لعب {played} جولة - كسب {wins}")
-elif section=="🧪 MEXC PREDICTION LAB - V20":
-    st.subheader("🧪 MEXC PREDICTION LAB - V20")
-    st.warning("✅ المصدر الرسمي الحقيقي - من سكرين MEXC: التسوية من Chainlink BTC/USD TWAP 60s - https://data.chain.link/streams/btc-usd-twap-60s-streams - القاعدة: TWAP >= سعر الافتتاح => UP - TWAP < سعر الافتتاح => DOWN - مش من MEXC Spot ولا Binance ولا العقود الفورية. MEXC Spot هنا بديل مؤقت فقط لان Chainlink Streams محتاج API Key - التسوية الرسمية النهائية لسه بتتسجل يدوي من التطبيق.")
-    cA,cB,cC,cD=st.columns(4); cA.metric("LIVE ROUNDS","15M"); cB.metric("AI ENGINE","ON"); cC.metric("PATTERN MEMORY","ON"); cD.metric("LEARNING","ON")
-    tab1,tab2,tab3,tab4=st.tabs(["Live Predictions","Candle / Volume / Order Book","AI Learning Center","Accuracy / Reports"])
-    with tab1:
-        # --- اوتوماتيك: كل ما تفتح التبويب ده - يسوي الجولات الفاتت لوحده ---
-        _auto_res = lab_auto_run_all()
-        if _auto_res.get("settled"): st.success("🤖 اوتوماتيك: تمت تسوية " + str(len(_auto_res["settled"])) + " جولة لوحدها: " + " | ".join(_auto_res["settled"][:3]))
-        else: st.caption("🤖 اوتوماتيك: مفيش جولات مستنية تسوية - كل الجولات متسوية لوحدها")
-        if not _auto_res.get("key_present"): st.warning("⚠️ عشان التسوية تبقى من Chainlink الرسمي 100% - حط CHAINLINK_API_KEY في Secrets - دلوقتي شغال اوتوماتيك بـ TWAP محسوب - شوف الشرح تحت")
-        _real=lab_fetch_real_source("BTCUSDT"); st.info(f"📡 المصدر الحقيقي: {_real.get('source')} | السعر: {_real.get('price','-')} | {_real.get('note','')}")
-        if st.button("🔄 شغل الاوتوماتيك دلوقتي - سوي + درب + توقع", type="primary", key="auto_run_btn"):
-            _r2 = lab_auto_run_all(); st.json(_r2); st.rerun()
-        if st.button("🔴 حلل الجولة الحالية - V20", type="primary"):
-            f15=lab_get_klines("BTCUSDT","15m",200)
-            if f15 is None: st.error("تعذر جلب شموع MEXC")
-            else:
-                ind=lab_indicators(f15); vol=lab_volume(f15); ob=lab_orderbook("BTCUSDT"); fut=lab_futures("BTCUSDT"); flow=lab_orderflow("BTCUSDT"); pats=lab_candle_patterns(f15); regime=lab_regime(f15,ind); corr=lab_correlation(); feats=lab_features_vector(f15,ind,vol,ob,flow,fut)
-                import sqlite3 as _sq, json as _j2
-                lab_init_db()
-                with _sq.connect(LAB_DB) as _c: rows=_c.execute("SELECT feats,label FROM lab_features WHERE label IN ('UP','DOWN')").fetchall()
-                hist=[]
-                for fs,lb in rows:
-                    try: hist.append((_j2.loads(fs), lb))
-                    except Exception: pass
-                sim=lab_similarity(feats, hist); pred=lab_predict_ensemble(feats,pats,vol,ob,flow,regime,sim, ml_prob=None); risk=lab_risk(pred["pred"], pred["prob"], feats["price"], ind.get("atr",0))
-                rs=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"); fh=hashlib.md5(_j2.dumps(feats, sort_keys=True).encode()).hexdigest()[:12]
-                with _sq.connect(LAB_DB) as _c:
-                    _c.execute("INSERT OR IGNORE INTO lab_predictions (round_start,created_at,pred,prob,confidence,regime,reasons,counter,invalidation,model_version,features_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (rs, datetime.now(timezone.utc).isoformat(), pred["pred"], pred["prob"], pred["confidence"], regime, " | ".join(pred["reasons"]), " | ".join(pred["counter"]), feats["price"], "ENSEMBLE-V20", fh))
-                    _c.execute("INSERT OR REPLACE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs, _j2.dumps(feats), "")); _c.commit()
-                col1,col2,col3,col4=st.columns(4); col1.metric("التوقع", pred["pred"]); col2.metric("الاحتمال", f"{pred['prob']*100:.1f}%"); col3.metric("الثقة", f"{pred['confidence']}%"); col4.metric("المرحلة", pred["stage"])
-                st.write(f"**السعر:** {feats['price']:,.2f} | **النظام:** {regime} | **اصوات UP:** {pred['votes_up']} | **اصوات DOWN:** {pred['votes_dn']}")
-                st.write(f"**الاسباب:** {' | '.join(pred['reasons'])}"); st.write(f"**الادلة المعارضة:** {' | '.join(pred['counter'])}"); st.write(f"**نماذج الشموع:** {' | '.join(pats)}")
-                st.write(f"**حجم:** {vol} | **دفتر:** {ob} | **فيوتشر:** {fut} | **Order Flow:** {flow}")
-                st.write(f"**مؤشرات:** RSI {ind.get('rsi')} | MACD {ind.get('macd')} | EMA9/21 {ind.get('ema9')}/{ind.get('ema21')} | VWAP {ind.get('vwap')} | BB {ind.get('bb_dn')} - {ind.get('bb_up')} | Support {ind.get('support')} | Resistance {ind.get('resistance')} | Fib {ind.get('fib382')}/{ind.get('fib618')}")
-                st.write(f"**تشابه:** {sim} | **ارتباط:** {corr}"); st.write(f"**مخاطر:** EV {risk.get('ev')} | Breakeven {risk.get('breakeven')} | قرار {risk.get('decision')} - {risk.get('reason')}")
-        st.markdown("#### ⚡ سجل 3 جولات فاتت مرة واحدة")
-        with st.form("log_3_past"):
-            c1,c2,c3=st.columns(3)
-            r1=c1.text_input("الجولة 1", value="2026-11-07 06:45"); l1=c1.selectbox("نتيجة 1", ["UP","DOWN"], key="l1")
-            r2=c2.text_input("الجولة 2", value="2026-11-07 07:00"); l2=c2.selectbox("نتيجة 2", ["UP","DOWN"], key="l2")
-            r3=c3.text_input("الجولة 3", value="2026-11-07 07:15"); l3=c3.selectbox("نتيجة 3", ["UP","DOWN"], key="l3")
-            if st.form_submit_button("💾 سجل التلاتة"):
-                lab_init_db(); saved=[]
-                for rs_in,off in [(r1,l1),(r2,l2),(r3,l3)]:
-                    if rs_in.strip():
-                        with sqlite3.connect(LAB_DB) as _c:
-                            bf=lab_backfill_features(rs_in.strip()); _c.execute("INSERT OR IGNORE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs_in.strip(), json.dumps(bf) if bf else "{}", off)); _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (off, rs_in.strip())); _c.commit()
-                        saved.append(f"{rs_in} = {off}")
-                st.success("تم تسجيل: "+" | ".join(saved))
-        st.markdown("#### سجل النتيجة الرسمية للجولة (يدوي - من تطبيق MEXC)")
-        with st.form("log_official"):
-            rs_in=st.text_input("وقت بداية الجولة (YYYY-MM-DD HH:MM)", value=""); off=st.selectbox("النتيجة الرسمية من MEXC", ["UP","DOWN"])
-            if st.form_submit_button("💾 سجل النتيجة الرسمية"):
-                if rs_in:
-                    lab_init_db()
-                    with sqlite3.connect(LAB_DB) as _c:
-                        bf2=lab_backfill_features(rs_in); _c.execute("INSERT OR IGNORE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rs_in, json.dumps(bf2) if bf2 else "{}", off)); _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (off, rs_in)); _c.commit()
-                    st.success(f"تم تسجيل {off} للجولة {rs_in}")
-                else: st.error("اكتب وقت الجولة")
-    with tab2:
-        f15b=lab_get_klines("BTCUSDT","15m",100)
-        if f15b is not None:
-            st.write("**نماذج:**", lab_candle_patterns(f15b)); st.write("**حجم:**", lab_volume(f15b)); st.write("**دفتر:**", lab_orderbook("BTCUSDT")); st.write("**فيوتشر:**", lab_futures("BTCUSDT")); st.write("**Order Flow:**", lab_orderflow("BTCUSDT")); st.write("**مؤشرات:**", lab_indicators(f15b)); st.write("**نظام السوق:**", lab_regime(f15b, lab_indicators(f15b))); st.write("**ارتباط:**", lab_correlation()); st.write("**مزامنة:**", {"note":"MEXC Spot time - Prediction settlement is Composite Index + TWAP, not spot close. Proxy only."})
-    with tab3:
-        try:
-            _st=lab_self_evolve(); st.success(f"🤖 التعلم التلقائي - عندك {_st.get('total',0)} جولة - {_st.get('reason','')}") if not _st.get("evolved") else st.success(f"🤖 تطور لوحده! دقة جديدة {_st.get('new_acc')}%")
-        except Exception as _e: st.caption(f"التعلم التلقائي: {_e}")
-        st.write("**دورة التعلم:** جمع -> خصائص -> تدريب RandomForest (Time Split 80/20) -> اختبار -> مقارنة -> اعتماد الافضل")
-        st.markdown("### 📚 تعلم من 1000 جولة فاتت - Backtest")
-        if st.button("📚 علمه من 1000 جولة فاتت - دلوقتي", type="primary"):
-            with st.spinner("بجيب 1000 شمعة..."):
-                res=lab_backtest_1000()
-            st.json(res)
-            if res.get("ok"): st.success(f"تم حفظ {res['saved']} جولة - {res['up']} UP / {res['down']} DOWN")
-        if st.button("🧠 درب النموذج الآن"):
-            res=lab_train_model(); st.json(res)
-        lab_init_db()
-        with sqlite3.connect(LAB_DB) as _c:
-            try: models=_c.execute("SELECT * FROM lab_models ORDER BY created_at DESC LIMIT 10").fetchall(); st.write("**اصدارات النماذج:**", models)
-            except Exception as e: st.write(e)
-    with tab4:
-        lab_init_db()
-        with sqlite3.connect(LAB_DB) as _c:
-            preds=_c.execute("SELECT * FROM lab_predictions ORDER BY id DESC LIMIT 50").fetchall(); feats_r=_c.execute("SELECT * FROM lab_features WHERE label IN ('UP','DOWN')").fetchall()
-        st.write(f"**توقعات مسجلة:** {len(preds)} | **جولات بعلامة فعلية:** {len(feats_r)}")
-        if feats_r:
-            mp={p[1]:p[3] for p in preds}; correct=up_c=up_n=dn_c=dn_n=0
-            for rs,fs,lb in feats_r:
-                if rs in mp:
-                    if mp[rs]==lb: correct+=1
-                    if lb=="UP": up_n+=1; up_c+=1 if mp[rs]=="UP" else 0
-                    else: dn_n+=1; dn_c+=1 if mp[rs]=="DOWN" else 0
-            st.write(f"**دقة:** {correct}/{len(feats_r)} = {correct/len(feats_r)*100:.1f}% | UP {up_c}/{up_n} | DOWN {dn_c}/{dn_n}")
-        st.dataframe(preds, use_container_width=True) if preds else st.info("لا توجد توقعات بعد.")
-elif section=="🔍 SCAN ALL - فحص كل العملات":
-    st.subheader("🔍 SCAN ALL - فحص كل عملات المنصات - بكل الادوات")
-    st.caption("بيفحص كل العملات - مش عملة واحدة - بنفس منطق TP/SL الجديد: دخول لحظي - استوب = نقطة اللاعودة - اهداف من الستركشر")
-    cA,cB,cC,cD=st.columns(4)
-    with cA: scan_plat=st.selectbox("المنصة", ["BINANCE","KUCOIN"], key="scan_plat")
-    with cB: st.caption("الاتجاه: النظام هو اللي بيقرر LONG ولا SHORT لوحده")
-    scan_dir="AUTO"
-    with cC: scan_min=st.slider("اقل Score", 50, 85, 70, key="scan_min")
-    with cD: scan_num=st.slider("عدد العملات", 20, 80, 50, key="scan_num")
-    if st.button("🔍 افحص كل العملات دلوقتي", use_container_width=True, type="primary"):
-        res_list=scan_all_coins(scan_plat, scan_dir, scan_min, scan_num)
-        if not res_list: st.warning("السوق هادي - مفيش اشارة قوية - احسن من اشارات ضعيفة")
-        else:
-            st.success(f"✅ {len(res_list)} اشارة قوية - Score >= {scan_min}")
-            st.dataframe(pd.DataFrame([{ "العملة":r["symbol"],"النوع":r["type"],"Score":r["score"],"السعر":r["price"],"الدخول - لحظي":r["entry"],"الاستوب - نقطة اللاعودة":r["stop"],"TP1":r["tp1"],"TP2":r["tp2"],"TP3 رنر":r.get("tp3","-"),"CVD":r["buy"],"Vol":r["vol"]} for r in res_list]), use_container_width=True)
-            st.markdown("### 🔥 اقوى 10 اشارات")
-            for r in res_list[:10]:
-                with st.expander(f"{r['symbol']} - Score {r['score']} - دخول {r['entry']}"):
-                    st.markdown(f"**الدخول:** {r['entry']} | **الاستوب - نقطة اللاعودة:** {r['stop']} - {r.get('nr_reason','')} | **TP1:** {r['tp1']} - {r.get('tp1_r','')} | **TP2:** {r['tp2']} | **TP3 رنر:** {r.get('tp3','-')}")
-                    st.text(r["extra"])
-elif section=="🎯 PREDICTION LAB المعتدل - سوق التوقعات":
-    st.subheader("🎯 PREDICTION LAB المعتدل - سوق التوقعات")
-    st.info("المصدر الرسمي: Chainlink BTC/USD TWAP 60s - https://data.chain.link/streams/btc-usd-twap-60s-streams - قاعدة التسوية: TWAP >= Open => UP - TWAP < Open => DOWN - MEXC Spot بديل مؤقت فقط - التسوية الرسمية تسجل يدوي")
-    st.markdown("**المعتدل = لا تدخل الا لو 3 شروط مع بعض - مش شرط واحد: Score >=70 + FVG موجود + CVD مؤكد - لو شرط ناقص = NO_TRADE**")
-    st.markdown("**قاعدة التسوية الرسمية (Chainlink):** TWAP بتاع Chainlink خلال الجولة >= سعر الافتتاح = UP - اقل = DOWN - الرابط: https://data.chain.link/streams/btc-usd-twap-60s-streams")
-    lab_sym=st.text_input("العملة", "BTCUSDT", key="mod_sym").strip().upper()
-    st.caption("الاتجاه: النظام هو اللي بيقرر PUMP ولا DUMP لوحده - انت متختارش")
-    lab_dir_mod = "AUTO"  # النظام بيقرر
-    # النظام هو اللي بيقرر PUMP ولا DUMP لوحده - من تحليل BTC الحالي - مش من اختيارك
-    try:
-        _fmod = lab_get_klines("BTCUSDT","15m",100)
-        _rmod = early_move_analyze(_fmod, "BTCUSDT") if _fmod is not None else None
-        lab_direction_mod = "PUMP" if (_rmod and _rmod.get("early_pump",0) >= _rmod.get("early_dump",0)) else "DUMP"
-        st.info(f"🤖 النظام قرر لوحده: {lab_direction_mod} - PUMP سكور {_rmod.get('early_pump',0) if _rmod else '-'} / DUMP سكور {_rmod.get('early_dump',0) if _rmod else '-'} - انت مخترتش حاجة")
-    except Exception:
-        lab_direction_mod="PUMP"
-    if st.button("🔍 توقع الجولة الحالية - المعتدل", key="mod_btn", use_container_width=True, type="primary"):
-        live=None; src="NONE"
-        try:
-            rr=requests.get("https://api.mexc.com/api/v3/ticker/price", params={"symbol":lab_sym}, timeout=8)
-            if rr.status_code==200: live=float(rr.json()["price"]); src="MEXC Spot REAL"
-        except Exception: pass
-        if live is None:
-            try:
-                rr=requests.get("https://api.binance.com/api/v3/ticker/price", params={"symbol":lab_sym}, timeout=8)
-                if rr.status_code==200: live=float(rr.json()["price"]); src="Binance REAL"
-            except Exception: pass
-        if live is None: st.error("المصدر غير متاح")
-        else:
-            st.markdown(f"**السعر اللحظي:** {live} | **المصدر:** {src}")
-            # شموع MEXC
-            fmod=None
-            try:
-                pp=api_json("https://api.mexc.com/api/v3/klines", {"symbol":lab_sym,"interval":"15m","limit":50})
-                if isinstance(pp,list) and len(pp)>=10:
-                    fmod=pd.DataFrame(pp, columns=["ot","open","high","low","close","vol","ct","qav"])
-                    for cc in ("open","high","low","close","vol"): fmod[cc]=pd.to_numeric(fmod[cc], errors="coerce")
-                    fmod=fmod.dropna().reset_index(drop=True)
-            except Exception: pass
-            if fmod is None or len(fmod)<10: st.warning("لا توجد شموع كافية")
-            else:
-                # تحليل معتدل باستخدام نفس منطق analyze - نحول الشموع لنفس صيغة frame
-                # frame هنا 15m - نستخدم analyze مع اعدادات معتدلة
-                _set={"want_long": True,"want_short": True,"use_fvg":False,"btc_filter":False,"funding_filter":False,"wall_filter":False,"killzone":True,"confirm_exchanges":False,"min_score":0}
-                sig,reason=analyze(fmod, lab_sym, _set)
-                if sig is None: st.warning(f"لا توجد اشارة - {reason}")
-                else:
-                    # الشروط الثلاثة للمعتدل
-                    c1_ok=sig["score"]>=70
-                    # FVG موجود؟ من extra
-                    c2_ok="FVG:" in sig["extra"] and "لا توجد" not in sig["extra"]
-                    c3_ok=(sig["buy"]>0 if lab_direction_mod=="PUMP" else sig["buy"]<0)
-                    st.markdown(f"**Score:** {sig['score']} - {'✅' if c1_ok else '❌'} لازم >=70")
-                    st.markdown(f"**FVG:** {'✅ موجود' if c2_ok else '❌ غير موجود'}")
-                    st.markdown(f"**CVD:** {sig['buy']}% - {'✅' if c3_ok else '❌'}")
-                    st.markdown(f"**الدخول - لحظي:** {sig['entry']} | **الاستوب - نقطة اللاعودة:** {sig['stop']} - {sig.get('nr_reason','')}")
-                    st.markdown(f"**TP1:** {sig['tp1']} - {sig.get('tp1_r','')} | **TP2:** {sig['tp2']} | **TP3 رنر:** {sig.get('tp3','-')}")
-                    st.text(sig["extra"])
-                    if c1_ok and c2_ok and c3_ok:
-                        if lab_direction_mod=="PUMP": st.success("التوقع المعتدل: 🟢 UP - ادخل شراء - دوس ارتفاع - 3 شروط متوفرة")
-                        else: st.error("التوقع المعتدل: 🔴 DOWN - ادخل بيع - دوس هبوط - 3 شروط متوفرة")
-                    else: st.warning("التوقع المعتدل: ⏸️ NO_TRADE - لا تدخل - شرط ناقص - المعتدل لا يدخل ناقص")
+            st.markdown(f"**التوقع:** {'🟢 UP' if pr['pred']=='UP' else '🔴 DOWN'} - **الثقة:** {pr['conf']}% - **دقة النموذج:** {pr['accuracy']}% على {pr['total']} جولة")
+            st.text(" | ".join(pr['reasons']))
+            if pr['conf']>=70: st.success("المعتدل: ادخل" if pr['pred']=='UP' else "المعتدل: ادخل بيع")
+            else: st.warning("NO_TRADE - الثقة أقل من 70")
+
+elif section.startswith("📈"):
+    st.subheader("📈 Options Analysis")
+    sym_o=st.text_input("العملة للخيارات", "BTC", key="opt_sym")
+    o=options_analysis(sym_o)
+    st.markdown(f"**Implied Volatility:** {o['IV']}\n\n**Open Interest:** {o['OI']}\n\n**Strike Prices:** {o['Strikes']}\n\n**Greeks:** {o['Greeks']}\n\n*{o['note']}*")
+
+elif section.startswith("⚽"):
+    st.subheader("⚽ Football Analysis - تحليل مستقل، بدون مراهنات تلقائية")
+    c1,c2=st.columns(2)
+    with c1: home=st.text_input("الفريق الأول", "Real Madrid")
+    with c2: away=st.text_input("الفريق الثاني", "Barcelona")
+    o1,o2,o3=st.columns(3)
+    with o1: oh=st.number_input("أودز فوز الأول (1)", value=2.10, step=0.01)
+    with o2: od=st.number_input("أودز التعادل (X)", value=3.40, step=0.01)
+    with o3: oa=st.number_input("أودز فوز الثاني (2)", value=3.20, step=0.01)
+    if st.button("📊 احسب الاحتمالات"):
+        f=football_analysis(home, away, oh, od, oa)
+        st.markdown(f"**{home} فوز (1):** {f['home']}% | **تعادل (X):** {f['draw']}% | **{away} فوز (2):** {f['away']}%")
+
+elif section.startswith("💾"):
+    st.subheader("💾 Paper Trading + Backtest + Walk-forward")
+    st.markdown("**Paper Trading:** سجل صفقة وهمية من غير فلوس حقيقية، وتابعها.")
+    pc1,pc2,pc3=st.columns(3)
+    with pc1: pt_sym=st.text_input("العملة", "BTC/USDT", key="pt_sym")
+    with pc2: pt_side=st.selectbox("الاتجاه", ["LONG","SHORT"], key="pt_side")
+    with pc3: pt_size=st.number_input("حجم الصفقة $", value=100.0, step=10.0, key="pt_size")
+    pe1,pe2,pe3=st.columns(3)
+    with pe1: pt_entry=st.number_input("الدخول", value=0.0, format="%.8f", key="pt_entry")
+    with pe2: pt_stop=st.number_input("الاستوب", value=0.0, format="%.8f", key="pt_stop")
+    with pe3: pt_tp1=st.number_input("TP1", value=0.0, format="%.8f", key="pt_tp1")
+    if st.button("💾 سجل Paper Trade"):
+        if pt_entry>0:
+            with sqlite3.connect(DB_PATH) as c: c.execute("INSERT INTO paper_trades (created_at,symbol,side,entry,stop,tp1,tp2,tp3,size_usd) VALUES (?,?,?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), pt_sym, pt_side, pt_entry, pt_stop, pt_tp1, pt_tp1, pt_tp1, pt_size)); c.commit()
+            st.success("تم تسجيل Paper Trade")
+    with sqlite3.connect(DB_PATH) as c: df_pt=pd.read_sql_query("SELECT * FROM paper_trades ORDER BY id DESC LIMIT 20", c)
+    if not df_pt.empty: st.dataframe(df_pt, use_container_width=True, hide_index=True)
     st.markdown("---")
-    st.markdown("### 🤖 الاوتوماتيك - التسوية من غير ما تسجل يدوي")
-    st.info("الاوتوماتيك شغال: كل ما تفتح التطبيق - بيسوي الجولة اللي فاتت لوحدها من Chainlink TWAP - وبيعلم النموذج لوحده - مش محتاج تسجل يدوي تاني")
-    if st.button("🔄 سوي الجولات الفاتت اوتوماتيك دلوقتي", key="mod_auto_settle"):
-        _s = lab_auto_settle()
-        if _s: st.success("تمت التسوية اوتوماتيك: " + " | ".join(_s))
-        else: st.info("مفيش جولات مستنية - كله متسوي اوتوماتيك")
-    with st.expander("🔑 ازاي تجيب CHAINLINK_API_KEY وتحطه - عشان التسوية تبقى من Chainlink الرسمي 100%"):
-        st.markdown("1) ادخل على https://data.chain.link - اعمل حساب - اطلب API Key لـ Data Streams\n2) روح Streamlit Cloud - افتح التطبيق - Manage app - Settings - Secrets\n3) حط السطر ده في Secrets وحده في سطر لوحده:\n`CHAINLINK_API_KEY = \"الـ Key بتاعك هنا\"`)\n4) اعمل Reboot - التطبيق هيقرا الـ Key لوحده ويجيب TWAP من Chainlink الرسمي - من غير ما تعمل حاجة تاني\n5) لو محطتش الـ Key - الاوتوماتيك شغال برضه بـ TWAP محسوب من شموع 1m - والفرق صغير")
-    st.markdown("**تسجيل النتيجة الرسمية للجولة - للتعلم (اختياري - الاوتوماتيك بيعمله لوحده):**")
-    cc1,cc2,cc3=st.columns(3)
-    with cc1: rt=st.text_input("وقت الجولة - 2026-11-07 07:30", key="mod_time")
-    with cc2: rr2=st.selectbox("النتيجة الرسمية من التطبيق", ["UP","DOWN"], key="mod_res")
-    with cc3:
-        if st.button("💾 سجل النتيجة", key="mod_save"):
-            if rt:
-                lab_init_db()
-                with sqlite3.connect(LAB_DB) as _c:
-                    bf=lab_backfill_features(rt); _c.execute("INSERT OR IGNORE INTO lab_features (round_start,feats,label) VALUES (?,?,?)", (rt, json.dumps(bf) if bf else "{}", rr2)); _c.execute("UPDATE lab_features SET label=? WHERE round_start=?", (rr2, rt)); _c.commit()
-                st.success(f"تم تسجيل {rt} = {rr2}")
-            else: st.warning("ادخل وقت الجولة")
-    st.caption("المعتدل = Score >=70 + FVG موجود + CVD مؤكد - لو شرط ناقص = NO_TRADE")
+    st.markdown("**Backtest + Walk-forward (بدون Look-ahead):**")
+    be1,be2=st.columns(2)
+    with be1: bt_ex=st.selectbox("المنصة للباك تست", ["KuCoin","MEXC","Bybit"], key="bt_ex")
+    with be2: bt_sym=st.text_input("رمز الباك تست", "XBTUSDTM" if bt_ex=="KuCoin" else "BTCUSDT", key="bt_sym")
+    if st.button("▶️ شغل Backtest"):
+        bt=backtest_simple(bt_ex, bt_sym, "1h", 500)
+        if bt is None: st.warning("N/A")
+        else:
+            st.markdown(f"**Win Rate:** {bt['win_rate']}% | **إجمالي الصفقات:** {bt['total']} | **متوسط R:R:** {bt['avg_rr']} | **Train:** {bt['train_len']} شمعة | **Test:** {bt['test_len']} شمعة (Walk-forward 70/30)")
+            with sqlite3.connect(DB_PATH) as c: c.execute("INSERT INTO backtests (created_at,symbol,timeframe,win_rate,total,avg_rr,notes) VALUES (?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), bt_sym, "1h", bt['win_rate'], bt['total'], bt['avg_rr'], "Champion: EMA9/21 | Challenger: EMA9/21 + FVG - بدون Look-ahead")); c.commit()
+
+elif section.startswith("📊 Performance"):
+    st.subheader("📊 Performance Dashboard - دقة الإشارات")
+    with sqlite3.connect(DB_PATH) as c:
+        try: df_s=pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 200", c)
+        except: df_s=pd.DataFrame()
+        try: df_b=pd.read_sql_query("SELECT * FROM backtests ORDER BY id DESC LIMIT 20", c)
+        except: df_b=pd.DataFrame()
+    if df_s.empty: st.info("لسه مفيش إشارات مسجلة - امسح Futures الأول")
+    else:
+        st.markdown(f"**إجمالي الإشارات:** {len(df_s)} | **متوسط Score:** {df_s['score'].mean():.1f} | **LONG:** {(df_s['side']=='LONG').sum()} | **SHORT:** {(df_s['side']=='SHORT').sum()}")
+        st.dataframe(df_s, use_container_width=True, hide_index=True)
+    if not df_b.empty:
+        st.markdown("### Backtests السابقة"); st.dataframe(df_b, use_container_width=True, hide_index=True)
+
+elif section.startswith("📩"):
+    st.subheader("📩 Telegram Test - @WHYNOTBLY7")
+    if st.button("📩 ابعت رسالة تجريبية"):
+        ok,msg=send_telegram("BLY7TRADER SIGNALS - Test ✅ - البوت شغال - @WHYNOTBLY7")
+        st.success(msg) if ok else st.error(msg)
+    st.markdown("**Secrets المطلوبة في Streamlit:**\n```\nTELEGRAM_BOT_TOKEN = \"...\"\nTELEGRAM_CHANNEL_ID = \"-100...\"\nCHAINLINK_API_KEY = \"...\" # اختياري - للتسوية الرسمية\n```")
 
 st.markdown("---")
-st.caption("BLY7H V20 V7 - MEXC PREDICTION LAB | البيانات قد تتأخر أو تفشل حسب واجهات المنصات. لا تنفّذ صفقة اعتمادًا على الإشارة وحدها.")
