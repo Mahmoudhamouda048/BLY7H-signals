@@ -14,24 +14,24 @@ SESSION.headers.update({"User-Agent":"BLY7TRADER-SIGNALS/V19-MOD"})
 TIMEOUT = 10
 STABLES = {"USDCUSDT","BUSDUSDT","DAIUSDT","FDUSDUSDT","USDEUSDT"}
 
-st.markdown("<div style='border:2px solid #FFD700;background:#0B0E14;padding:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)'>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V19 MODIFIED - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center;margin-top:12px'><span style='display:inline-block;background:#FFD700;color:#000;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:900'>SELF-LEARNING BOT - Learns from 1000 rounds</span> <span style='display:inline-block;background:#12161F;border:1px solid #1E2530;color:#E6E9EF;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700'>Monthly Rent $149 (Foreign $290) - Full Ownership $2499 (Foreign $4000)</span></div>", unsafe_allow_html=True)
-st.markdown("<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px'>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📐</div><div style='font-size:11px;font-weight:800;color:#FFF'>FVG</div><div style='font-size:10px;color:#8A93A3'>Fair Value Gap</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>🧱</div><div style='font-size:11px;font-weight:800;color:#FFF'>Order Block</div><div style='font-size:10px;color:#8A93A3'>Whale Zone</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📊</div><div style='font-size:11px;font-weight:800;color:#FFF'>CVD Real</div><div style='font-size:10px;color:#8A93A3'>Buy vs Sell</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📈</div><div style='font-size:11px;font-weight:800;color:#FFF'>OI + Funding</div><div style='font-size:10px;color:#8A93A3'>Open Interest</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📖</div><div style='font-size:11px;font-weight:800;color:#FFF'>Order Book</div><div style='font-size:10px;color:#8A93A3'>Buy / Sell Walls</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>⏰</div><div style='font-size:11px;font-weight:800;color:#FFF'>Killzone</div><div style='font-size:10px;color:#8A93A3'>London / NY</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>🧹</div><div style='font-size:11px;font-weight:800;color:#FFF'>Sweep</div><div style='font-size:10px;color:#8A93A3'>Stop Hunt</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📉</div><div style='font-size:11px;font-weight:800;color:#FFF'>EMA 9/21</div><div style='font-size:10px;color:#8A93A3'>Trend</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📊</div><div style='font-size:11px;font-weight:800;color:#FFF'>RSI</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📈</div><div style='font-size:11px;font-weight:800;color:#FFF'>MACD</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>"
-"<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📏</div><div style='font-size:11px;font-weight:800;color:#FFF'>ATR</div><div style='font-size:10px;color:#8A93A3'>Volatility</div></div>"
-"<div style='background:#12161F;border:1px solid #FFD700;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>💎</div><div style='font-size:11px;font-weight:900;color:#FFD700'>BLY7TRADER</div><div style='font-size:10px;color:#8A93A3'>@WHYNOTBLY7</div></div>"
-"</div>", unsafe_allow_html=True)
-st.markdown("<style>.stApp{background:#0B0E14;color:#E6E9EF} h1,h2,h3{color:#E6E9EF!important} .stButton>button{background:#FFD700;color:#000;font-weight:900;border-radius:10px;border:1px solid #FFD700} div[data-testid='stMetric']{background:#12161F;border:1px solid #1E2530;border-radius:14px} .stExpander{border:1px solid #1E2530;border-radius:14px;background:#12161F} section[data-testid='stSidebar']{background:#0F131B;border-right:1px solid #1E2530}</style>", unsafe_allow_html=True)
+st.markdown("""<div style="text-align:center"><div style="font-size:42px;font-weight:900;letter-spacing:4px;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">BLY7TRADER SIGNALS</div><div style="color:#FFD700;font-size:13px;letter-spacing:3px;">BLY7H ULTIMATE V19 MODIFIED • @WHYNOTBLY7 • PREDICT BEFORE THE MOVE</div></div>""", unsafe_allow_html=True)
+
+st.markdown("""<style>
+:root{--gold:#FFD700;--bg:#0B0E14;--card:#12161F;--line:#1E2530}
+.stApp{background:#0B0E14;color:#E6E9EF}
+h1,h2,h3{color:#E6E9EF!important;letter-spacing:.3px}
+.stButton>button{background:linear-gradient(90deg,#FFD700,#FF8C00);color:#000;font-weight:800;border-radius:12px;border:0;padding:10px 18px}
+.stButton>button:hover{filter:brightness(1.08)}
+div[data-testid="stMetric"]{background:#12161F;border:1px solid #1E2530;border-radius:14px;padding:14px}
+div[data-testid="stDataFrame"]{border-radius:14px;overflow:hidden}
+.stExpander{border:1px solid #1E2530;border-radius:14px;background:#12161F}
+section[data-testid="stSidebar"]{background:#0F131B}
+.badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.badge-long{background:#0E2A1A;color:#2ECC71;border:1px solid #1E5A35}
+.badge-short{background:#2A1113;color:#FF6B6B;border:1px solid #5A1E1E}
+.card{background:#12161F;border:1px solid #1E2530;border-radius:16px;padding:16px}
+.small{color:#8A93A3;font-size:12px}
+</style>""", unsafe_allow_html=True)
 
 def api_json(url, params=None, timeout=TIMEOUT):
     try:
@@ -315,11 +315,10 @@ def backtest_simple(exchange, symbol, gran="1h", limit=500):
     return {"symbol":symbol,"timeframe":gran,"total":total,"win_rate":round(wr,1),"avg_rr":round(avg_rr,2),"train_len":len(train),"test_len":len(test)}
 
 st.markdown(f"**Killzone:** {'✅ '+killzone_status()[1] if killzone_status()[0] else '⏸️ '+killzone_status()[1]} | **البيانات:** Futures حقيقية من المنصة - Spot مفصول تمامًا | **آخر تحديث:** {now_cairo().strftime('%Y-%m-%d %H:%M:%S')} Cairo")
-st.markdown("<div style='border:1px solid #1E2530;background:#12161F;border-radius:14px;padding:12px;margin-top:14px'><div style='font-size:12px;font-weight:900;letter-spacing:0.2em;color:#FFD700;text-align:center'>الأقسام - اختار قسم</div></div>", unsafe_allow_html=True)
-section = st.radio("الأقسام", ["📡 Futures Scanner","📊 تحليل عملة","🎲 MEXC Prediction","📈 Options","⚽ Football","💾 Paper Trading","📊 Performance","🧠 MEXC Learner","📩 Telegram"], horizontal=True, label_visibility="collapsed")
+section=st.sidebar.selectbox("القسم", ["🔍 Futures Scanner - KuCoin / MEXC / Bybit","📊 تحليل عملة - كل الفواصل","🎯 MEXC Prediction - UP/DOWN","📈 Options Analysis","⚽ Football Analysis","💾 Paper Trading + Backtest","📊 Performance Dashboard","🤖 MEXC Learner - بيعلم نفسه", "📩 Telegram Test"])
 st.sidebar.markdown("---"); st.sidebar.markdown("**BLY7TRADER SIGNALS**"); st.sidebar.caption("TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID في Secrets")
 
-if section.startswith("📡"):
+if section.startswith("🔍"):
     st.subheader("🔍 Futures Scanner - KuCoin / MEXC / Bybit - فصل تام عن Spot")
     c1,c2,c3,c4=st.columns(4)
     with c1: exch=st.selectbox("المنصة", ["KuCoin","MEXC","Bybit"])
@@ -381,7 +380,7 @@ elif section.startswith("📊 تحليل"):
             e9=ema(df["close"],9); e21=ema(df["close"],21); rr=rsi_calc(df["close"]); mm,ss,hh=macd_calc(df["close"]); aa=atr_calc(df)
             st.markdown(f"**{gran}** — سعر `{float(df['close'].iloc[-1]):.8g}` | EMA9 `{float(e9.iloc[-1]):.8g}` | EMA21 `{float(e21.iloc[-1]):.8g}` | RSI `{float(rr.iloc[-1]):.1f}` | MACD Hist `{float(hh.iloc[-1]):.8g}` | ATR `{float(aa.iloc[-1]):.8g}` | Momentum `{float(momentum_calc(df['close']).iloc[-1]):.8g}` | FVG {len(detect_fvg(df))} | OB {detect_ob(df)} | BSL/SSL {detect_bsl_ssl(df)} | Sweep {detect_sweep(df)['dir']}")
 
-elif section.startswith("🎲"):
+elif section.startswith("🎯"):
     st.subheader("🎯 MEXC Prediction - UP / DOWN / NO_TRADE")
     chk=mexc_prediction_check("BTCUSDT")
     if chk["status"]=="CHAINLINK": st.success(chk["msg"])
@@ -397,7 +396,7 @@ elif section.startswith("🎲"):
             else: st.warning("⏸️ NO_TRADE - شرط ناقص - المعتدل لا يدخل ناقص")
 
 
-elif section.startswith("🧠"):
+elif section.startswith("🤖"):
     st.subheader("🤖 MEXC Learner - بيعلم نفسه بنفسه")
     st.markdown("### التعلم الذاتي")
     if st.button("🧠 علم البوت من 1000 جولة سابقة دلوقتي", type="primary", use_container_width=True):
