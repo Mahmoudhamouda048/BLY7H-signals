@@ -6,7 +6,7 @@ import numpy as np
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="BLY7TRADER SIGNALS", page_icon="💎", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", page_icon="💎", layout="wide", initial_sidebar_state="collapsed")
 CAIRO = ZoneInfo("Africa/Cairo")
 DB_PATH = "bly7h_signals.db"
 TIMEOUT = 12
@@ -17,13 +17,13 @@ _thread_local = threading.local()
 def get_session():
     if not hasattr(_thread_local, "s"):
         s = requests.Session()
-        s.headers.update({"User-Agent": "BLY7TRADER-SIGNALS/V21-ALL-FIXED-BINANCE"})
+        s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"})
         _thread_local.s = s
     return _thread_local.s
 SESSION = get_session()
 
 st.markdown("<div style='border:2px solid #FFD700;background:#0B0E14;padding:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)'>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V25 MEXC SINGLE FETCH - ALL FIXED + BINANCE - كامل بدون نقص - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center;margin-top:12px'><span style='display:inline-block;background:#FFD700;color:#000;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:900'>SELF-LEARNING BOT - Learns from 1000 rounds</span> <span style='display:inline-block;background:#12161F;border:1px solid #1E2530;color:#E6E9EF;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700'>Monthly Rent $149 (Foreign $290) - Full Ownership $2499 (Foreign $4000)</span></div>", unsafe_allow_html=True)
 st.markdown("<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px'>"
 "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📐</div><div style='font-size:11px;font-weight:800;color:#FFF'>FVG</div><div style='font-size:10px;color:#8A93A3'>Fair Value Gap</div></div>"
@@ -37,7 +37,7 @@ st.markdown("<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8p
 "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📊</div><div style='font-size:11px;font-weight:800;color:#FFF'>RSI</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>"
 "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📈</div><div style='font-size:11px;font-weight:800;color:#FFF'>MACD</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>"
 "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📏</div><div style='font-size:11px;font-weight:800;color:#FFF'>ATR</div><div style='font-size:10px;color:#8A93A3'>Volatility</div></div>"
-"<div style='background:#12161F;border:1px solid #FFD700;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>💎</div><div style='font-size:11px;font-weight:900;color:#FFD700'>BLY7TRADER</div><div style='font-size:10px;color:#8A93A3'>@WHYNOTBLY7</div></div>"
+"<div style='background:#12161F;border:1px solid #FFD700;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>💎</div><div style='font-size:11px;font-weight:900;color:#FFD700'>Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 "</div>", unsafe_allow_html=True)
 st.markdown("<style>.stApp{background:#0B0E14;color:#E6E9EF} h1,h2,h3{color:#E6E9EF!important} .stButton>button{background:#FFD700;color:#000;font-weight:900;border-radius:10px;border:1px solid #FFD700} div[data-testid='stMetric']{background:#12161F;border:1px solid #1E2530;border-radius:14px} .stExpander{border:1px solid #1E2530;border-radius:14px;background:#12161F} section[data-testid='stSidebar']{background:#0F131B;border-right:1px solid #1E2530}</style>", unsafe_allow_html=True)
 
@@ -186,7 +186,7 @@ def fmt_bly7trader(s):
     denom = abs(s["entry"] - s["stop"]) if abs(s["entry"] - s["stop"]) > 0 else 1
     rr1 = abs(s["tp1"] - s["entry"]) / denom
     rr2 = abs(s["tp2"] - s["entry"]) / denom
-    return f"""BLY7TRADER\n\n{side} — {s['symbol']}\n⭐ Score: {s['score']}/100\n\n💵 Price: {s['price']:.8g}\n🎯 Entry: {s['entry']:.8g}\n⛔ Stop Loss: {s['stop']:.8g}\n✅ TP1: {s['tp1']:.8g}\n🏆 TP2: {s['tp2']:.8g}\n🏆 TP3: {s.get('tp3', s['tp2']):.8g}\n📊 R:R TP1 1:{rr1:.2f} | TP2 1:{rr2:.2f}\n\n📈 1H Change: {s['ch']}%\n📦 Volume: x{s['vol']}\n📊 CVD: {s['buy']}%\n{s.get('extra','')}\n\n📩 Telegram: @WHYNOTBLY7\n#BLY7TRADER"""
+    return f"""Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"""
 
 # ===== FIX 3: KuCoin symbols - فلترة صح + ترتيب بالفوليوم =====
 def kucoin_futures_symbols(limit=1000):
@@ -370,11 +370,29 @@ def klines_mexc_fut(symbol, interval="15m", limit=200):
             except Exception as e:
                 last_err = str(e); continue
             _t.sleep(0.05)
-    # خزن اخر خطأ عشان التشخيص يوريه
+    # خزن اخر خطأ في متغير عام - مش session_state عشان Threads
+    global LAST_MEXC_ERR
+    LAST_MEXC_ERR = last_err
     try:
-        import streamlit as _st
-        _st.session_state["last_mexc_err"] = last_err
+        LAST_MEXC_ERRS.append(last_err)
     except Exception:
+        pass
+    # بديل أخير: لو Futures اتقفل من Streamlit، جرب Spot klines عشان المسح مايقفش - السعر قريب جدا للتحليل
+    try:
+        spot_sym = symbol.replace("_USDT", "USDT")
+        sess2 = get_session()
+        r2 = sess2.get("https://api.mexc.com/api/v3/klines", params={"symbol": spot_sym, "interval": "15m" if mexc_interval=="Min15" else "1h", "limit": limit}, timeout=TIMEOUT)
+        if r2.status_code == 200:
+            j2 = r2.json()
+            if isinstance(j2, list) and len(j2) >= 30:
+                df2 = pd.DataFrame(j2, columns=["time","open","high","low","close","vol","close_time","quote_vol","trades","taker_buy_base","taker_buy_quote","ignore"])
+                for c in ["open","high","low","close","vol"]:
+                    df2[c] = pd.to_numeric(df2[c], errors="coerce")
+                df2 = df2[["time","open","high","low","close","vol"]].dropna().reset_index(drop=True)
+                if len(df2) >= 30:
+                    LAST_MEXC_ERR = last_err + " | تم استخدام Spot كبديل"
+                    return df2
+    except Exception as e:
         pass
     return None
 
@@ -783,6 +801,8 @@ def lab_predict_current(exchange='KuCoin', symbol='XBTUSDTM'):
 
 
 # --- Scanner helpers V23 ---
+LAST_MEXC_ERRS = []
+LAST_MEXC_ERR = ""
 import functools
 def _live_symbols(exch_cached, limit_cached):
     if exch_cached == "KuCoin":
@@ -850,12 +870,12 @@ def _is_stale(df, max_age_min=150):
         return False
 
 section = st.radio("الأقسام", ["📡 Futures Scanner", "📊 تحليل عملة", "🎲 MEXC Prediction", "📈 Options", "⚽ Football", "💾 Paper Trading", "📊 Performance", "🧠 MEXC Learner", "📩 Telegram"], horizontal=True, label_visibility="collapsed")
-st.sidebar.markdown("---"); st.sidebar.markdown("**BLY7TRADER SIGNALS**"); st.sidebar.caption("TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID في Secrets")
+st.sidebar.markdown("---"); st.sidebar.markdown("**Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"); st.sidebar.caption("TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID في Secrets")
 st.sidebar.markdown("### 🔔 التنبيهات")
 auto_alert = st.sidebar.toggle("تنبيه تلقائي لأقوى إشارة", value=False)
 alert_min = st.sidebar.slider("أقل Score للتنبيه", 60, 90, 75)
 if st.sidebar.button("🔔 اختبار التنبيه الآن"):
-    ok, msg = send_telegram("BLY7TRADER SIGNALS - Test ✅ - التنبيه شغال - @WHYNOTBLY7")
+    ok, msg = send_telegram("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
     st.sidebar.success(msg) if ok else st.sidebar.error(msg)
 
 if section.startswith("📡"):
@@ -951,7 +971,7 @@ if section.startswith("📡"):
                 st.markdown(f"**تشخيص المسح [{exch}]:** جلبنا `{len(raw_syms)}` | هنمسح `{len(syms)}` | نجح `{ok_count}` | مفيش شموع `{no_klines}` | شموع قديمة `{stale}` | استوب بنيوي مرفوض `{invalid_stop}` | تحت Score `{low_score}` | اتجاه مخالف `{side_filtered}` | فرص ظاهرة `{len(results)}`")
                 if ok_count == 0 and len(syms) > 0:
                     st.error(f"❌ كل الشموع فشلت على {exch} - جرب تاني بعد دقيقة او قلل Threads لـ 3")
-                    _le = st.session_state.get("last_mexc_err", "") if exch == "MEXC" else ""
+                    _le = LAST_MEXC_ERR if exch == "MEXC" else ""
                     if _le:
                         st.caption(f"آخر خطأ من MEXC: {_le}")
                     if _errs:
@@ -1159,7 +1179,7 @@ elif section.startswith("📊 Performance"):
 elif section.startswith("📩"):
     st.subheader("📩 Telegram Test - @WHYNOTBLY7")
     if st.button("📩 ابعت رسالة تجريبية"):
-        ok, msg = send_telegram("BLY7TRADER SIGNALS - Test ✅ - البوت شغال - @WHYNOTBLY7")
+        ok, msg = send_telegram("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
         st.success(msg) if ok else st.error(msg)
     st.markdown("**Secrets المطلوبة في Streamlit:**\n```\nTELEGRAM_BOT_TOKEN = \"...\"\nTELEGRAM_CHANNEL_ID = \"-100...\"\nCHAINLINK_API_KEY = \"...\" # اختياري\n```")
 st.markdown("---")
