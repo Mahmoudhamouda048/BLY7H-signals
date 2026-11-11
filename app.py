@@ -23,7 +23,7 @@ def get_session():
 SESSION = get_session()
 
 st.markdown("<div style='border:2px solid #FFD700;background:#0B0E14;padding:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)'>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V24 LIVE ONLY - ALL FIXED + BINANCE - كامل بدون نقص - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V25 MEXC SINGLE FETCH - ALL FIXED + BINANCE - كامل بدون نقص - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center;margin-top:12px'><span style='display:inline-block;background:#FFD700;color:#000;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:900'>SELF-LEARNING BOT - Learns from 1000 rounds</span> <span style='display:inline-block;background:#12161F;border:1px solid #1E2530;color:#E6E9EF;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700'>Monthly Rent $149 (Foreign $290) - Full Ownership $2499 (Foreign $4000)</span></div>", unsafe_allow_html=True)
 st.markdown("<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px'>"
 "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📐</div><div style='font-size:11px;font-weight:800;color:#FFF'>FVG</div><div style='font-size:10px;color:#8A93A3'>Fair Value Gap</div></div>"
@@ -305,46 +305,78 @@ def oi_binance(symbol):
     return p.get("openInterest", "N/A")
 
 def klines_mexc_fut(symbol, interval="15m", limit=200):
-    # MEXC FIX: ميكسك مش بيقبل 15m / 1h - بيقبل Min15 / Min60 بس
     mexc_map = {"1m": "Min1", "3m": "Min5", "5m": "Min5", "15m": "Min15", "1h": "Min60", "Min1": "Min1", "Min5": "Min5", "Min15": "Min15", "Min60": "Min60"}
     mexc_interval = mexc_map.get(interval, "Min15")
-    p = api_json("https://contract.mexc.com/api/v1/contract/kline", {"symbol": symbol, "interval": mexc_interval, "limit": limit})
-    if not p:
-        return None
-    d = p.get("data", {})
-    # MEXC بيرجع الداتا كـ dict فيه اعمدة: {"time":[...], "open":[...], "high":[...], "low":[...], "close":[...], "vol":[...]}
-    # مش list زي كوكوين - ده كان سبب ان ميكسك يرجع None على طول
+    # MEXC بيعمل Rate Limit لو ضربت limit بس - جرب start/end الاول، وبعدين limit، وجرب هوست بديل
+    import time as _t
+    hosts = ["https://contract.mexc.com", "https://futures.mexc.com"]
+    end_ms = int(_t.time() * 1000)
+    gran_min = {"Min1": 1, "Min5": 5, "Min15": 15, "Min60": 60}.get(mexc_interval, 15)
+    start_ms = end_ms - limit * gran_min * 60 * 1000
+    last_err = ""
+    for host in hosts:
+        for params in [{"symbol": symbol, "interval": mexc_interval, "start": start_ms, "end": end_ms}, {"symbol": symbol, "interval": mexc_interval, "limit": limit}]:
+            try:
+                sess = get_session()
+                r = sess.get(f"{host}/api/v1/contract/kline", params=params, timeout=TIMEOUT)
+                last_err = f"HTTP {r.status_code} host={host} params={params}"
+                if r.status_code != 200:
+                    continue
+                try:
+                    j = r.json()
+                except Exception as e:
+                    last_err = str(e); continue
+                # MEXC بيرجع {"success":true,"code":0,"data":{...}} او {"code":0,"data":...}
+                if isinstance(j, dict) and j.get("code") not in (None, 0, "0", 200, "200"):
+                    # لو فيه data مع كود غريب كمل، لو مفيش data سجل الخطأ
+                    if "data" not in j:
+                        last_err = f"MEXC code={j.get('code')} msg={j.get('msg')} host={host}"
+                        continue
+                d = (j or {}).get("data", {}) if isinstance(j, dict) else {}
+                if not d:
+                    last_err = f"MEXC empty data host={host} j_keys={list(j.keys()) if isinstance(j,dict) else type(j)}"
+                    continue
+                # داتا اعمدة
+                if isinstance(d, dict) and "time" in d and "close" in d:
+                    df = pd.DataFrame({"time": d.get("time", []), "open": d.get("open", []), "high": d.get("high", []), "low": d.get("low", []), "close": d.get("close", []), "vol": d.get("vol", [])})
+                    for c in ["open", "high", "low", "close", "vol"]:
+                        df[c] = pd.to_numeric(df[c], errors="coerce")
+                    df = df.dropna().reset_index(drop=True)
+                    if len(df) >= 30:
+                        return df
+                    last_err = f"MEXC len {len(df)} <30"
+                    continue
+                if isinstance(d, dict):
+                    inner = d.get("data", []) or d.get("kline", []) or []
+                    if inner and len(inner) >= 30:
+                        if isinstance(inner[0], dict):
+                            df = pd.DataFrame(inner); df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "vol", "t": "time"})
+                        else:
+                            df = pd.DataFrame(inner, columns=["time", "open", "high", "low", "close", "vol"][:len(inner[0])])
+                        for c in ["open", "high", "low", "close", "vol"]:
+                            if c in df.columns:
+                                df[c] = pd.to_numeric(df[c], errors="coerce")
+                        df = df.dropna().reset_index(drop=True)
+                        if len(df) >= 30:
+                            return df
+                if isinstance(d, list) and len(d) >= 30:
+                    df = pd.DataFrame(d, columns=["time", "open", "high", "low", "close", "vol"][:len(d[0])]) if not isinstance(d[0], dict) else pd.DataFrame(d)
+                    for c in ["open", "high", "low", "close", "vol"]:
+                        if c in df.columns:
+                            df[c] = pd.to_numeric(df[c], errors="coerce")
+                    df = df.dropna().reset_index(drop=True)
+                    if len(df) >= 30:
+                        return df
+            except Exception as e:
+                last_err = str(e); continue
+            _t.sleep(0.05)
+    # خزن اخر خطأ عشان التشخيص يوريه
     try:
-        if isinstance(d, dict) and "time" in d and "close" in d:
-            df = pd.DataFrame({"time": d.get("time", []), "open": d.get("open", []), "high": d.get("high", []), "low": d.get("low", []), "close": d.get("close", []), "vol": d.get("vol", [])})
-        elif isinstance(d, dict):
-            inner = d.get("data", []) or d.get("kline", []) or []
-            if not inner or len(inner) < 30:
-                return None
-            if isinstance(inner[0], dict):
-                df = pd.DataFrame(inner)
-                df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "vol", "t": "time"})
-            else:
-                df = pd.DataFrame(inner, columns=["time", "open", "high", "low", "close", "vol"][:len(inner[0])])
-        elif isinstance(d, list):
-            if len(d) < 30:
-                return None
-            if isinstance(d[0], dict):
-                df = pd.DataFrame(d)
-                df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "vol", "t": "time"})
-            else:
-                df = pd.DataFrame(d, columns=["time", "open", "high", "low", "close", "vol"][:len(d[0])])
-        else:
-            return None
-        for c in ["open", "high", "low", "close", "vol"]:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-        df = df.dropna().reset_index(drop=True)
-        if len(df) < 30:
-            return None
-        return df
+        import streamlit as _st
+        _st.session_state["last_mexc_err"] = last_err
     except Exception:
-        return None
+        pass
+    return None
 
 def klines_bybit_fut(symbol, interval="15", limit=200):
     p = api_json("https://api.bybit.com/v5/market/kline", {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit})
@@ -521,11 +553,11 @@ def calc_structural_stop(df, side, entry, e21_val, bsl_ssl, fvg_list, sweep_info
             stop = entry * 1.04
         return float(stop), "SHORT: BSL/EMA21/FVG/OB/Sweep"
 
-def analyze_futures(exchange, symbol, display, btc_trend="NEUTRAL", fetch_extra=False):
-    df = get_futures_klines(exchange, symbol, "1h", 200)
+def analyze_futures(exchange, symbol, display, btc_trend="NEUTRAL", fetch_extra=False, _df_pre=None, _df15_pre=None):
+    df = _df_pre if _df_pre is not None else get_futures_klines(exchange, symbol, "1h", 200)
     if df is None:
         return None
-    df15 = get_futures_klines(exchange, symbol, "15m", 100)
+    df15 = _df15_pre if _df15_pre is not None else get_futures_klines(exchange, symbol, "15m", 100)
     price = float(df["close"].iloc[-1])
     e9 = ema(df["close"], 9); e21 = ema(df["close"], 21); r = rsi_calc(df["close"]); m, sig, hist = macd_calc(df["close"]); a = atr_calc(df)
     fvg = detect_fvg(df); ob = detect_ob(df); bsl_ssl = detect_bsl_ssl(df); sweep = detect_sweep(df)
@@ -851,7 +883,7 @@ if section.startswith("📡"):
     with c4:
         side_f = st.selectbox("الاتجاه", ["الكل", "LONG فقط", "SHORT فقط"])
     # Threads متكيف حسب المنصة - KuCoin/MEXC حساسين للـ Rate Limit
-    default_workers = 5 if exch in ("KuCoin","MEXC") else 8
+    default_workers = 3 if exch == "MEXC" else (5 if exch == "KuCoin" else 8)
     workers = st.slider("سرعة المسح (Threads)", 1, 12, default_workers)
     show_diag = st.checkbox("اعرض تشخيص المسح", value=True)
     # لحظي: مفيش نتايج متسجلة - كل مسح بيبدأ من الصفر
@@ -866,6 +898,7 @@ if section.startswith("📡"):
                 st.info(f"تم جلب {len(raw_syms)} رمز من {exch} - بعد ترتيب السيولة هنمسح {len(syms)}")
             results = []; ok_count=0; no_klines=0; stale=0; invalid_stop=0; low_score=0; side_filtered=0
             prog = st.progress(0)
+            _errs = []
             def _one(s):
                 try:
                     disp = display_symbol(s, exch)
@@ -874,16 +907,19 @@ if section.startswith("📡"):
                         return (s, None, "NO_KLINES")
                     if _is_stale(df1):
                         return (s, None, "STALE")
-                    # تحليل كامل - analyze_futures هيجيب الشموع تاني من الكاش الداخلي؟ لا - هنحلل هنا مباشرة عشان مانضربش API مرتين
-                    # لذلك بنادي analyze_futures لكنه هيعيد جلب 1h - مقبول لان الـ API فيه Retry والـ Threads متكيفة
-                    r = analyze_futures(exch, s, disp, btc_trend, fetch_extra=False)
+                    # 15m مرة واحدة بس - مش جوه analyze تاني
+                    df15 = get_futures_klines(exch, s, "15m", 100)
+                    r = analyze_futures(exch, s, disp, btc_trend, fetch_extra=False, _df_pre=df1, _df15_pre=df15)
                     if r is None:
                         return (s, None, "INVALID_STOP_OR_FILTER")
-                    # فلتر سيولة داخلي: حجم اخر شمعة لازم يكون موجود - لو حجم صفر يترفض
                     if r.get("vol", 0) is not None and float(r.get("vol", 1)) < 0.01:
                         return (s, None, "LOW_VOL")
+                    # تهدئة لـ MEXC عشان Rate Limit
+                    if exch == "MEXC":
+                        time.sleep(0.08)
                     return (s, r, "OK")
-                except Exception:
+                except Exception as e:
+                    _errs.append(str(e))
                     return (s, None, "EXC")
             with concurrent.futures.ThreadPoolExecutor(max_workers=int(workers)) as ex:
                 futs = {ex.submit(_one, s): s for s in syms}
@@ -915,6 +951,11 @@ if section.startswith("📡"):
                 st.markdown(f"**تشخيص المسح [{exch}]:** جلبنا `{len(raw_syms)}` | هنمسح `{len(syms)}` | نجح `{ok_count}` | مفيش شموع `{no_klines}` | شموع قديمة `{stale}` | استوب بنيوي مرفوض `{invalid_stop}` | تحت Score `{low_score}` | اتجاه مخالف `{side_filtered}` | فرص ظاهرة `{len(results)}`")
                 if ok_count == 0 and len(syms) > 0:
                     st.error(f"❌ كل الشموع فشلت على {exch} - جرب تاني بعد دقيقة او قلل Threads لـ 3")
+                    _le = st.session_state.get("last_mexc_err", "") if exch == "MEXC" else ""
+                    if _le:
+                        st.caption(f"آخر خطأ من MEXC: {_le}")
+                    if _errs:
+                        st.caption(f"أول خطأ داخلي: {_errs[0][:300]}")
             if auto_alert and results:
                 top = results[0]
                 if top["score"] >= alert_min:
