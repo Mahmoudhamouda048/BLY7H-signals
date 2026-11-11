@@ -23,7 +23,7 @@ def get_session():
 SESSION = get_session()
 
 st.markdown("<div style='border:2px solid #FFD700;background:#0B0E14;padding:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)'>", unsafe_allow_html=True)
-st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V21.2 FULL - ALL FIXED + BINANCE - كامل بدون نقص - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V24 LIVE ONLY - ALL FIXED + BINANCE - كامل بدون نقص - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>", unsafe_allow_html=True)
 st.markdown("<div style='text-align:center;margin-top:12px'><span style='display:inline-block;background:#FFD700;color:#000;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:900'>SELF-LEARNING BOT - Learns from 1000 rounds</span> <span style='display:inline-block;background:#12161F;border:1px solid #1E2530;color:#E6E9EF;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700'>Monthly Rent $149 (Foreign $290) - Full Ownership $2499 (Foreign $4000)</span></div>", unsafe_allow_html=True)
 st.markdown("<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px'>"
 "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📐</div><div style='font-size:11px;font-weight:800;color:#FFF'>FVG</div><div style='font-size:10px;color:#8A93A3'>Fair Value Gap</div></div>"
@@ -145,17 +145,8 @@ def display_symbol(raw, exchange):
         return raw.replace("USDT", "/USDT")
     return raw.replace("USDT", "/USDT")
 
-def save_signals(signals, exchange):
-    if not signals:
-        return
-    rows = []
-    stamp = datetime.now(timezone.utc).isoformat()
-    for s in signals:
-        rows.append((stamp, exchange, s["symbol"], s["type"], s["score"], s["price"], s["entry"], s["stop"], s["tp1"], s["tp2"], s.get("tp3", s["tp2"]), s["ch"], s["vol"], s["buy"], "OPEN"))
-    with sqlite3.connect(DB_PATH) as c:
-        c.executemany("INSERT INTO signals (created_at,exchange,symbol,side,score,price,entry,stop,tp1,tp2,tp3,change_pct,volume_ratio,cvd,outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-        c.commit()
-
+def save_signals(results, exch):
+    return None  # لحظي: مفيش حفظ
 def save_paper_trade(symbol, side, entry, stop, tp1, tp2, tp3, size_usd):
     with sqlite3.connect(DB_PATH) as c:
         c.execute("INSERT INTO paper_trades (created_at,symbol,side,entry,stop,tp1,tp2,tp3,size_usd) VALUES (?,?,?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), symbol, side, entry, stop, tp1, tp2, tp3, size_usd))
@@ -460,6 +451,76 @@ def cvd_from_trades_kucoin(symbol):
         return None
     return (buy - sell) / (buy + sell) * 100
 
+
+def calc_structural_stop(df, side, entry, e21_val, bsl_ssl, fvg_list, sweep_info, atr_val, ob_dict):
+    """استوب مبني على البنية - مش رقم ثابت ولا عشوائي"""
+    buf = 0.5 * atr_val
+    if side == "LONG":
+        # مرشحين تحت الدخول: SSL / اقل قاع 20 شمعة / EMA21 / قاع FVG / قاع OB
+        cands = []
+        cands.append(bsl_ssl["SSL"] - buf)
+        try:
+            cands.append(float(df["low"].tail(20).min()) - buf)
+        except Exception:
+            pass
+        if e21_val < entry:
+            cands.append(e21_val - buf)
+        # FVG صاعد: قاع الجاب
+        for f in (fvg_list or []):
+            if f.get("type") == "bull" and f.get("bottom", 0) < entry:
+                cands.append(float(f["bottom"]) - buf)
+        if ob_dict and ob_dict.get("ob_low", 0) < entry:
+            cands.append(float(ob_dict["ob_low"]) - buf)
+        # Sweep هابط: لو عمل Sweep تحت SSL يبقى الاستوب تحت قاع الـ Sweep
+        if sweep_info and sweep_info.get("dir") == "BULLISH_SWEEP":
+            try:
+                cands.append(float(df["low"].iloc[-1]) - buf)
+            except Exception:
+                pass
+        # اختار اقرب مرشح تحت الدخول (اكبر واحد تحت الدخول) - ده اللي يلغي الفكرة
+        below = [c for c in cands if c < entry]
+        if below:
+            stop = max(below)
+        else:
+            stop = entry - 1.0 * atr_val
+        # حماية: الاستوب مايكونش قريب اوي ولا بعيد اوي
+        risk_pct = (entry - stop) / entry if entry else 0
+        if risk_pct < 0.002:  # اقل من 0.2% - قريب اوي هيتضرب
+            stop = entry - max(0.5 * atr_val, entry * 0.003)
+        if risk_pct > 0.04:  # اكتر من 4% - بعيد اوي
+            stop = entry * 0.96
+        return float(stop), "LONG: SSL/EMA21/FVG/OB/Sweep"
+    else:  # SHORT
+        cands = []
+        cands.append(bsl_ssl["BSL"] + buf)
+        try:
+            cands.append(float(df["high"].tail(20).max()) + buf)
+        except Exception:
+            pass
+        if e21_val > entry:
+            cands.append(e21_val + buf)
+        for f in (fvg_list or []):
+            if f.get("type") == "bear" and f.get("top", 0) > entry:
+                cands.append(float(f["top"]) + buf)
+        if ob_dict and ob_dict.get("ob_high", 0) > entry:
+            cands.append(float(ob_dict["ob_high"]) + buf)
+        if sweep_info and sweep_info.get("dir") == "BEARISH_SWEEP":
+            try:
+                cands.append(float(df["high"].iloc[-1]) + buf)
+            except Exception:
+                pass
+        above = [c for c in cands if c > entry]
+        if above:
+            stop = min(above)
+        else:
+            stop = entry + 1.0 * atr_val
+        risk_pct = (stop - entry) / entry if entry else 0
+        if risk_pct < 0.002:
+            stop = entry + max(0.5 * atr_val, entry * 0.003)
+        if risk_pct > 0.04:
+            stop = entry * 1.04
+        return float(stop), "SHORT: BSL/EMA21/FVG/OB/Sweep"
+
 def analyze_futures(exchange, symbol, display, btc_trend="NEUTRAL", fetch_extra=False):
     df = get_futures_klines(exchange, symbol, "1h", 200)
     if df is None:
@@ -528,16 +589,20 @@ def analyze_futures(exchange, symbol, display, btc_trend="NEUTRAL", fetch_extra=
     if a_last <= 0:
         a_last = price * 0.01
     side = "LONG" if is_long else "SHORT"
+    entry = price
+    e21_val = float(e21.iloc[-1]) if len(e21) else entry
+    stop, stop_reason = calc_structural_stop(df, side, entry, e21_val, bsl_ssl, fvg, sweep, a_last, ob)
+    # تأكيد نهائي: الاستوب لازم يكون في الاتجاه الصح - لو غلط الغي الاشارة
+    if side == "LONG" and stop >= entry:
+        return None
+    if side == "SHORT" and stop <= entry:
+        return None
+    risk = abs(entry - stop)
+    # TPs مبنية على الريسك نفسه - مش ATR ثابت - عشان R:R يبقى مظبوط
     if side == "LONG":
-        entry = price; stop = max(ob["ob_low"], price - 1.5 * a_last)
-        if (entry - stop) / entry > 0.03:
-            stop = entry * 0.985
-        tp1 = entry + 1.5 * a_last; tp2 = entry + 2.8 * a_last; tp3 = entry + 4.5 * a_last
+        tp1 = entry + 1.5 * risk; tp2 = entry + 2.8 * risk; tp3 = entry + 4.5 * risk
     else:
-        entry = price; stop = min(ob["ob_high"], price + 1.5 * a_last)
-        if (stop - entry) / entry > 0.03:
-            stop = entry * 1.015
-        tp1 = entry - 1.5 * a_last; tp2 = entry - 2.8 * a_last; tp3 = entry - 4.5 * a_last
+        tp1 = entry - 1.5 * risk; tp2 = entry - 2.8 * risk; tp3 = entry - 4.5 * risk
     risk = abs(entry - stop); rr1 = abs(tp1 - entry) / risk if risk > 0 else 0; rr2 = abs(tp2 - entry) / risk if risk > 0 else 0; rr3 = abs(tp3 - entry) / risk if risk > 0 else 0
     funding = "N/A"; oi = "N/A"; obk = None
     if fetch_extra:
@@ -549,7 +614,7 @@ def analyze_futures(exchange, symbol, display, btc_trend="NEUTRAL", fetch_extra=
             funding = funding_bybit(symbol)
         elif exchange == "Binance":
             funding = funding_binance(symbol); oi = oi_binance(symbol)
-    extra = f"EMA9 {float(e9.iloc[-1]):.4g} / EMA21 {float(e21.iloc[-1]):.4g} | RSI {r_last:.1f} | ATR {a_last:.4g} | BSL {bsl_ssl['BSL']:.4g} / SSL {bsl_ssl['SSL']:.4g} | Sweep {sweep['dir']} | MTF {mtf} | Funding {funding} | OI {oi} | {cvd_src} | {btc_note} | رسوم تقديرية 0.06% + انزلاق 0.03% | Trailing: حرك الاستوب للدخول عند TP1، ثم Trailing بـ 1 ATR"
+    extra = f"Stop: {stop_reason} | Stop {stop:.8g} من BSL {bsl_ssl['BSL']:.4g} / SSL {bsl_ssl['SSL']:.4g} / EMA21 {e21_val:.4g} | EMA9 {float(e9.iloc[-1]):.4g} / EMA21 {float(e21.iloc[-1]):.4g} | RSI {r_last:.1f} | ATR {a_last:.4g} | BSL {bsl_ssl['BSL']:.4g} / SSL {bsl_ssl['SSL']:.4g} | Sweep {sweep['dir']} | MTF {mtf} | Funding {funding} | OI {oi} | {cvd_src} | {btc_note} | رسوم تقديرية 0.06% + انزلاق 0.03% | Trailing: حرك الاستوب للدخول عند TP1، ثم Trailing بـ 1 ATR"
     return {"symbol": display, "exchange": exchange, "type": side, "score": int(max(5, min(100, score))), "price": price, "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "tp3": tp3, "ch": round(float(ch_1h), 2), "vol": round(float(vol_ratio), 2), "buy": round(float(cvd), 1), "rsi": round(r_last, 1), "atr": a_last, "fvg": len(fvg), "extra": extra, "rr1": round(float(rr1), 2), "rr2": round(float(rr2), 2), "rr3": round(float(rr3), 2), "funding": funding, "oi": oi, "ob": obk, "killzone": kz, "mtf": mtf, "reasons": " | ".join(reasons)}
 
 def mexc_prediction_check(symbol="BTCUSDT"):
@@ -586,20 +651,18 @@ def backtest_simple(exchange, symbol, gran="1h", limit=500):
             a_last = entry * 0.01
         ob = detect_ob(window)
         if is_long:
-            stop = max(ob["ob_low"], entry - 1.5 * a_last)
-            if (entry - stop) / entry > 0.03:
-                stop = entry * 0.985
-            risk = abs(entry - stop); tp1 = entry + 1.5 * a_last
+            _e21b = float(ema(window["close"], 21).iloc[-1]); _bsl = detect_bsl_ssl(window); _fvg_b = detect_fvg(window); _sw_b = detect_sweep(window)
+            stop, _ = calc_structural_stop(window, "LONG", entry, _e21b, _bsl, _fvg_b, _sw_b, a_last, ob)
+            risk = abs(entry - stop); tp1 = entry + 1.5 * risk
             if nxt >= tp1:
                 wins += 1; rrs.append(abs(tp1 - entry) / risk if risk > 0 else 0)
             elif nxt <= stop:
                 rrs.append(-1)
             total += 1
         else:
-            stop = min(ob["ob_high"], entry + 1.5 * a_last)
-            if (stop - entry) / entry > 0.03:
-                stop = entry * 1.015
-            risk = abs(stop - entry); tp1 = entry - 1.5 * a_last
+            _e21b = float(ema(window["close"], 21).iloc[-1]); _bsl = detect_bsl_ssl(window); _fvg_b = detect_fvg(window); _sw_b = detect_sweep(window)
+            stop, _ = calc_structural_stop(window, "SHORT", entry, _e21b, _bsl, _fvg_b, _sw_b, a_last, ob)
+            risk = abs(stop - entry); tp1 = entry - 1.5 * risk
             if nxt <= tp1:
                 wins += 1; rrs.append(abs(tp1 - entry) / risk if risk > 0 else 0)
             elif nxt >= stop:
@@ -686,6 +749,74 @@ def lab_predict_current(exchange='KuCoin', symbol='XBTUSDTM'):
     acc = row[0] if row else 50; total = row[1] if row else 0; pred = 'UP' if score > 0 else 'DOWN'; conf = min(85, max(50, acc + abs(score) * 5))
     return {'pred': pred, 'conf': round(conf, 1), 'score': score, 'feats': feats, 'accuracy': acc, 'total': total, 'reasons': reasons}
 
+
+# --- Scanner helpers V23 ---
+import functools
+def _live_symbols(exch_cached, limit_cached):
+    if exch_cached == "KuCoin":
+        return kucoin_futures_symbols(limit_cached)
+    if exch_cached == "MEXC":
+        return mexc_futures_symbols(limit_cached)
+    if exch_cached == "Binance":
+        return binance_futures_symbols(limit_cached)
+    return bybit_futures_symbols(limit_cached)
+
+def _btc_trend_live():
+    try:
+        df = get_futures_klines("Binance", "BTCUSDT", "1h", 100)
+        if df is None:
+            df = get_futures_klines("KuCoin", "XBTUSDTM", "1h", 100)
+        if df is None:
+            return "NEUTRAL"
+        e9 = ema(df["close"], 9); e21 = ema(df["close"], 21)
+        return "UP" if e9.iloc[-1] > e21.iloc[-1] else "DOWN"
+    except Exception:
+        return "NEUTRAL"
+
+def _volume_map(exch):
+    """ترتيب الرموز بالسيولة - عشان الماسح مايمسحش عملات ميتة اول 100"""
+    try:
+        if exch == "Binance":
+            j = api_json("https://fapi.binance.com/fapi/v1/ticker/24hr")
+            if isinstance(j, list):
+                return {x.get("symbol",""): float(x.get("quoteVolume",0) or 0) for x in j}
+        if exch == "KuCoin":
+            j = api_json("https://api-futures.kucoin.com/api/v1/contracts/active")
+            d = (j or {}).get("data", [])
+            return {c.get("symbol",""): float(c.get("turnoverOf24h",0) or 0) for c in d}
+        if exch == "Bybit":
+            j = api_json("https://api.bybit.com/v5/market/tickers", {"category":"linear"})
+            lst = (j or {}).get("result",{}).get("list",[])
+            return {x.get("symbol",""): float(x.get("turnover24h",0) or 0) for x in lst}
+        if exch == "MEXC":
+            j = api_json("https://contract.mexc.com/api/v1/contract/ticker")
+            d = (j or {}).get("data", [])
+            if isinstance(d, list):
+                return {x.get("symbol",""): float(x.get("amount24",0) or 0) for x in d}
+    except Exception:
+        pass
+    return {}
+
+def _sort_by_volume(syms, exch):
+    vm = _volume_map(exch)
+    if not vm:
+        # dedupe فقط لو مفيش سيولة
+        return list(dict.fromkeys(syms))
+    # dedupe + ترتيب تنازلي بالسيولة + استبعاد سيولة صفر
+    uniq = list(dict.fromkeys(syms))
+    uniq_sorted = sorted(uniq, key=lambda s: vm.get(s, 0), reverse=True)
+    # استبعد اللي سيولته صفر تماما (عملات متوقفة) لو فيه بديل
+    filtered = [s for s in uniq_sorted if vm.get(s, 0) > 0]
+    return filtered if len(filtered) >= 20 else uniq_sorted
+
+def _is_stale(df, max_age_min=150):
+    try:
+        last_ms = int(df["time"].iloc[-1])
+        age_min = (int(time.time()*1000) - last_ms) / 60000
+        return age_min > max_age_min
+    except Exception:
+        return False
+
 section = st.radio("الأقسام", ["📡 Futures Scanner", "📊 تحليل عملة", "🎲 MEXC Prediction", "📈 Options", "⚽ Football", "💾 Paper Trading", "📊 Performance", "🧠 MEXC Learner", "📩 Telegram"], horizontal=True, label_visibility="collapsed")
 st.sidebar.markdown("---"); st.sidebar.markdown("**BLY7TRADER SIGNALS**"); st.sidebar.caption("TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID في Secrets")
 st.sidebar.markdown("### 🔔 التنبيهات")
@@ -696,136 +827,119 @@ if st.sidebar.button("🔔 اختبار التنبيه الآن"):
     st.sidebar.success(msg) if ok else st.sidebar.error(msg)
 
 if section.startswith("📡"):
-    st.subheader("🔍 Futures Scanner - KuCoin / MEXC / Bybit / Binance - فصل تام عن Spot")
-    # ===== FIX 5: زرار تشخيص KuCoin =====
-    if st.button("🔧 اختبر MEXC الآن - تشخيص"):
-        with st.spinner("بختبر MEXC..."):
-            syms_test = mexc_futures_symbols(20)
-            st.write(f"الرموز اللي رجعت من MEXC: {len(syms_test)} - اول 5: {syms_test[:5]}")
-            df_btc = get_futures_klines("MEXC", "BTC_USDT", "1h", 100)
-            if df_btc is None:
-                st.error("❌ BTC_USDT على MEXC: مفيش شموع - جرب تاني")
-            else:
-                st.success(f"✅ MEXC شغال: BTC اخر سعر {float(df_btc['close'].iloc[-1]):.2f} - عدد الشموع {len(df_btc)}")
-                df_eth = get_futures_klines("MEXC", "ETH_USDT", "15m", 100)
-                if df_eth is not None:
-                    st.success(f"✅ MEXC 15m شغال: ETH {float(df_eth['close'].iloc[-1]):.2f}")
-                else:
-                    st.warning("⚠️ MEXC 15m فشل")
-    if st.button("🔧 اختبر Binance الآن - تشخيص"):
-        with st.spinner("بختبر Binance..."):
-            syms_test = binance_futures_symbols(20)
-            st.write(f"الرموز اللي رجعت من Binance: {len(syms_test)} - اول 5: {syms_test[:5]}")
-            df_btc = get_futures_klines("Binance", "BTCUSDT", "1h", 100)
-            if df_btc is None:
-                st.error("❌ BTCUSDT على Binance: مفيش شموع")
-            else:
-                st.success(f"✅ Binance شغال: BTC اخر سعر {float(df_btc['close'].iloc[-1]):.2f} - عدد الشموع {len(df_btc)}")
-                df_eth = get_futures_klines("Binance", "ETHUSDT", "15m", 100)
-                if df_eth is not None:
-                    st.success(f"✅ Binance 15m شغال: ETH {float(df_eth['close'].iloc[-1]):.2f}")
-    if st.button("🔧 اختبر KuCoin الآن - تشخيص"):
-        with st.spinner("بختبر KuCoin..."):
-            syms_test = kucoin_futures_symbols(20)
-            st.write(f"الرموز اللي رجعت: {len(syms_test)} - اول 5: {syms_test[:5]}")
-            df_btc = get_futures_klines("KuCoin", "XBTUSDTM", "1h", 100)
-            if df_btc is None:
-                st.error("❌ BTC XBTUSDTM: مفيش شموع - الـ API مش راجع او النت محظور في Streamlit Cloud")
-            else:
-                st.success(f"✅ BTC شغال: اخر سعر {float(df_btc['close'].iloc[-1]):.2f} - عدد الشموع {len(df_btc)}")
-                df_eth = get_futures_klines("KuCoin", "ETHUSDTM", "1h", 100)
-                if df_eth is not None:
-                    st.success(f"✅ ETH شغال: {float(df_eth['close'].iloc[-1]):.2f}")
-                else:
-                    st.warning("⚠️ ETH فشل - جرب تاني")
+    st.subheader("🔴 LIVE Futures Scanner - KuCoin / MEXC / Bybit / Binance - كل حاجة لحظية بدون حفظ")
+    # تشخيص لكل منصة - نفس الدالة لكل منصة عشان مفيش تحيز
+    diag_cols = st.columns(4)
+    for _i, (_ex, _sym) in enumerate([("KuCoin","XBTUSDTM"),("MEXC","BTC_USDT"),("Bybit","BTCUSDT"),("Binance","BTCUSDT")]):
+        with diag_cols[_i]:
+            if st.button(f"🔧 اختبر {_ex}", key=f"diag_{_ex}"):
+                with st.spinner(f"بختبر {_ex}..."):
+                    _syms = _live_symbols(_ex, 20)
+                    st.write(f"{_ex}: {len(_syms)} رمز")
+                    _df = get_futures_klines(_ex, _sym, "1h", 100)
+                    if _df is None or _is_stale(_df):
+                        st.error(f"❌ {_ex}: مفيش شموع حديثة")
+                    else:
+                        st.success(f"✅ {_ex}: {float(_df['close'].iloc[-1]):.8g} - {len(_df)} شمعة")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         exch = st.selectbox("المنصة", ["KuCoin", "MEXC", "Bybit", "Binance"])
     with c2:
-        n_sym = st.slider("عدد العملات", 20, 500, 100, step=10)
+        n_sym = st.slider("عدد العملات - بعد ترتيب السيولة", 20, 500, 100, step=10)
     with c3:
-        min_score = st.slider("أقل Score - خليه 55 او 60 عشان تشوف فرص", 50, 85, 60)
+        min_score = st.slider("أقل Score", 50, 85, 60)
     with c4:
         side_f = st.selectbox("الاتجاه", ["الكل", "LONG فقط", "SHORT فقط"])
-    workers = st.slider("سرعة المسح (Threads) - خليها 8 لو KuCoin بيقطع", 1, 12, 8)
-    show_diag = st.checkbox("اعرض تشخيص المسح (كم عملة نجحت / فشلت)", value=True)
-    btc_trend = "NEUTRAL"
-    try:
-        btc_df = get_futures_klines("Binance", "BTCUSDT", "1h", 100)
-        if btc_df is None:
-            btc_df = get_futures_klines("KuCoin", "XBTUSDTM", "1h", 100)
-        if btc_df is not None:
-            e9b = ema(btc_df["close"], 9); e21b = ema(btc_df["close"], 21); btc_trend = "UP" if e9b.iloc[-1] > e21b.iloc[-1] else "DOWN"
-    except Exception:
-        btc_trend = "NEUTRAL"
+    # Threads متكيف حسب المنصة - KuCoin/MEXC حساسين للـ Rate Limit
+    default_workers = 5 if exch in ("KuCoin","MEXC") else 8
+    workers = st.slider("سرعة المسح (Threads)", 1, 12, default_workers)
+    show_diag = st.checkbox("اعرض تشخيص المسح", value=True)
+    # لحظي: مفيش نتايج متسجلة - كل مسح بيبدأ من الصفر
+    btc_trend = _btc_trend_live()
+    _live_res = []
+    st.caption(f"BTC Trend: {btc_trend} | الترتيب: بالسيولة 24h تنازلي | الاستوب: بنيوي BSL/SSL/EMA21/FVG/OB/Sweep")
     if st.button("🔍 امسح Futures دلوقتي", type="primary", use_container_width=True):
         with st.spinner(f"بمسح {exch} Futures..."):
-            if exch == "KuCoin":
-                syms = kucoin_futures_symbols(n_sym)
-            elif exch == "MEXC":
-                syms = mexc_futures_symbols(n_sym)
-            elif exch == "Binance":
-                syms = binance_futures_symbols(n_sym)
-            else:
-                syms = bybit_futures_symbols(n_sym)
+            raw_syms = _live_symbols(exch, 500)
+            syms = _sort_by_volume(raw_syms, exch)[:n_sym]
             if show_diag:
-                st.info(f"تم جلب {len(syms)} رمز من {exch} - ببدأ تحليل الشموع...")
-            results = []; ok_count = 0; fail_count = 0; low_score = 0
+                st.info(f"تم جلب {len(raw_syms)} رمز من {exch} - بعد ترتيب السيولة هنمسح {len(syms)}")
+            results = []; ok_count=0; no_klines=0; stale=0; invalid_stop=0; low_score=0; side_filtered=0
+            prog = st.progress(0)
             def _one(s):
                 try:
                     disp = display_symbol(s, exch)
+                    df1 = get_futures_klines(exch, s, "1h", 200)
+                    if df1 is None:
+                        return (s, None, "NO_KLINES")
+                    if _is_stale(df1):
+                        return (s, None, "STALE")
+                    # تحليل كامل - analyze_futures هيجيب الشموع تاني من الكاش الداخلي؟ لا - هنحلل هنا مباشرة عشان مانضربش API مرتين
+                    # لذلك بنادي analyze_futures لكنه هيعيد جلب 1h - مقبول لان الـ API فيه Retry والـ Threads متكيفة
                     r = analyze_futures(exch, s, disp, btc_trend, fetch_extra=False)
-                    return (s, r)
-                except Exception:
-                    return (s, None)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=int(workers)) as ex:
-                for s, r in ex.map(_one, syms):
                     if r is None:
-                        fail_count += 1
-                        continue
+                        return (s, None, "INVALID_STOP_OR_FILTER")
+                    # فلتر سيولة داخلي: حجم اخر شمعة لازم يكون موجود - لو حجم صفر يترفض
+                    if r.get("vol", 0) is not None and float(r.get("vol", 1)) < 0.01:
+                        return (s, None, "LOW_VOL")
+                    return (s, r, "OK")
+                except Exception:
+                    return (s, None, "EXC")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=int(workers)) as ex:
+                futs = {ex.submit(_one, s): s for s in syms}
+                done_n = 0
+                for fut in concurrent.futures.as_completed(futs):
+                    done_n += 1
+                    prog.progress(min(1.0, done_n / max(1, len(syms))))
+                    s, r, reason = fut.result()
+                    if reason == "NO_KLINES" or reason == "EXC":
+                        no_klines += 1; continue
+                    if reason == "STALE":
+                        stale += 1; continue
+                    if reason == "INVALID_STOP_OR_FILTER":
+                        invalid_stop += 1; continue
+                    if reason == "LOW_VOL":
+                        invalid_stop += 1; continue
                     ok_count += 1
-                    if r["score"] >= min_score:
-                        if side_f == "LONG فقط" and r["type"] != "LONG":
-                            continue
-                        if side_f == "SHORT فقط" and r["type"] != "SHORT":
-                            continue
-                        results.append(r)
-                    else:
-                        low_score += 1
-            results = sorted(results, key=lambda x: x["score"], reverse=True)
-            st.session_state["fut_results"] = results
-            save_signals(results, exch)
+                    if r["score"] < min_score:
+                        low_score += 1; continue
+                    if side_f == "LONG فقط" and r["type"] != "LONG":
+                        side_filtered += 1; continue
+                    if side_f == "SHORT فقط" and r["type"] != "SHORT":
+                        side_filtered += 1; continue
+                    results.append(r)
+            results = sorted(results, key=lambda x: (x["score"], x["vol"]), reverse=True)
+            _live_res = results
+            # لحظي: مفيش حفظ - النتايج دي بتاعت المسح ده بس
             if show_diag:
-                st.markdown(f"**تشخيص المسح:** جلبنا `{len(syms)}` | نجح تحليل `{ok_count}` | فشل شموع `{fail_count}` | تحت Score `{low_score}` | فرص ظاهرة `{len(results)}`")
+                st.markdown(f"**تشخيص المسح [{exch}]:** جلبنا `{len(raw_syms)}` | هنمسح `{len(syms)}` | نجح `{ok_count}` | مفيش شموع `{no_klines}` | شموع قديمة `{stale}` | استوب بنيوي مرفوض `{invalid_stop}` | تحت Score `{low_score}` | اتجاه مخالف `{side_filtered}` | فرص ظاهرة `{len(results)}`")
                 if ok_count == 0 and len(syms) > 0:
-                    st.error(f"❌ كل الشموع فشلت على {exch} - دي مشكلة اتصال من سيرفر Streamlit، جرب تاني بعد دقيقة او قلل Threads لـ 3")
+                    st.error(f"❌ كل الشموع فشلت على {exch} - جرب تاني بعد دقيقة او قلل Threads لـ 3")
             if auto_alert and results:
                 top = results[0]
-                if top["score"] >= alert_min and not already_alerted(top["symbol"], top["type"], top["score"]):
+                if top["score"] >= alert_min:
                     ok, msg = send_telegram(fmt_bly7trader(top))
                     if ok:
-                        mark_alerted(top["symbol"], top["type"], top["score"], top["price"])
-                        st.success("🔔 تم إرسال التنبيه التلقائي لأقوى إشارة")
+                        st.success("🔔 تم إرسال التنبيه التلقائي لأقوى إشارة - لحظي")
             if not results:
-                st.warning(f"مسحنا {len(syms)} عملة - مفيش فرص واضحة فوق Score {min_score} - قلل Score لـ 55 وجرب تاني")
-    res = st.session_state.get("fut_results", [])
+                st.warning(f"مسحنا {len(syms)} عملة على {exch} - مفيش فرص فوق Score {min_score} - جرب تنزل لـ 55")
+    res = _live_res  # لحظي فقط - مفيش نتايج من مسح قديم
     if res:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("إجمالي الفرص", len(res)); m2.metric("LONG", sum(1 for x in res if x["type"] == "LONG")); m3.metric("SHORT", sum(1 for x in res if x["type"] == "SHORT")); m4.metric("أعلى Score", max(x["score"] for x in res))
-        st.markdown(f"### 🔥 أقوى {len(res)} إشارة")
-        df_show = pd.DataFrame([{"العملة": r["symbol"], "المنصة": r["exchange"], "الاتجاه": r["type"], "Score": r["score"], "السعر": r["price"], "الدخول": r["entry"], "الاستوب": r["stop"], "TP1": r["tp1"], "TP2": r["tp2"], "TP3": r["tp3"], "R:R TP2": r["rr2"], "1H%": r["ch"], "حجم": r["vol"], "CVD": r["buy"], "Funding": r["funding"]} for r in res])
+        st.markdown(f"### 🔥 أقوى {len(res)} إشارة - {exch}")
+        df_show = pd.DataFrame([{"العملة": r["symbol"], "المنصة": r["exchange"], "الاتجاه": r["type"], "Score": r["score"], "السعر": r["price"], "الدخول": r["entry"], "الاستوب (بنيوي)": r["stop"], "TP1": r["tp1"], "TP2": r["tp2"], "TP3": r["tp3"], "R:R TP2": r["rr2"], "1H%": r["ch"], "حجم": r["vol"], "CVD": r["buy"]} for r in res])
         st.dataframe(df_show, use_container_width=True, hide_index=True)
         for r in res[:10]:
-            with st.expander(f"{r['symbol']} — {r['type']} — Score {r['score']} — دخول {r['entry']:.8g}"):
-                st.markdown(f"**الدخول:** {r['entry']:.8g} | **الاستوب:** {r['stop']:.8g} | **TP1:** {r['tp1']:.8g} | **TP2:** {r['tp2']:.8g} | **TP3:** {r['tp3']:.8g} | **R:R:** TP1 1:{r['rr1']} TP2 1:{r['rr2']} TP3 1:{r['rr3']}")
+            with st.expander(f"{r['symbol']} — {r['type']} — Score {r['score']} — دخول {r['entry']:.8g} — استوب {r['stop']:.8g}"):
+                st.markdown(f"**الدخول:** {r['entry']:.8g} | **الاستوب (بنيوي):** {r['stop']:.8g} | **TP1:** {r['tp1']:.8g} | **TP2:** {r['tp2']:.8g} | **TP3:** {r['tp3']:.8g} | **R:R:** TP1 1:{r['rr1']} TP2 1:{r['rr2']} TP3 1:{r['rr3']}")
                 st.text(r["extra"]); st.code(fmt_bly7trader(r), language="text")
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    if st.button(f"📩 ابعت {r['symbol']} لتليجرام", key=f"tg_{r['symbol']}_{r['type']}"):
+                    if st.button(f"📩 ابعت {r['symbol']} لتليجرام", key=f"tg_{r['symbol']}_{r['type']}_{r['exchange']}"):
                         ok, msg = send_telegram(fmt_bly7trader(r)); st.success(msg) if ok else st.error(msg)
                 with col_b:
-                    if st.button(f"💾 سجل Paper Trade {r['symbol']}", key=f"pt_{r['symbol']}_{r['type']}"):
-                        save_paper_trade(r["symbol"], r["type"], r["entry"], r["stop"], r["tp1"], r["tp2"], r["tp3"], 100.0); st.success("تم تسجيل Paper Trade + Signal")
+                    st.caption("لحظي - مفيش تسجيل Paper Trade")
         if st.button("📩 ابعت أقوى 5 لتليجرام"):
             for r in res[:5]:
                 send_telegram(fmt_bly7trader(r)); time.sleep(0.4)
