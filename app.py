@@ -1,5 +1,5 @@
 # BLY7TRADER — V19 interface / Futures intelligence
-# Run: pip install -r requirements.txt && streamlit run bly7h_ultimate_v19.py
+# Run: pip install -r requirements.txt && streamlit run BLY7TRADER.py
 # Notes:
 # - CVD below is candle-direction volume proxy, NOT trade-level CVD.
 # - Cross-exchange check verifies spot symbol availability, not futures direction.
@@ -507,6 +507,151 @@ def check_spot_listings(symbol):
 
 # ----------------------------- Indicators -----------------------------
 
+def add_indicators(frame):
+    """Return a copy of OHLCV data with the indicators required by analyze()."""
+    if frame is None or frame.empty:
+        return frame
+    out = frame.copy()
+    for column in ("open", "high", "low", "close", "vol"):
+        if column not in out.columns:
+            raise ValueError(f"عمود بيانات مفقود: {column}")
+        out[column] = pd.to_numeric(out[column], errors="coerce")
+
+    close = out["close"]
+    high = out["high"]
+    low = out["low"]
+    out["ema9"] = close.ewm(span=9, adjust=False, min_periods=1).mean()
+    out["ema21"] = close.ewm(span=21, adjust=False, min_periods=1).mean()
+    out["ema200"] = close.ewm(span=200, adjust=False, min_periods=1).mean()
+
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    out["rsi"] = 100 - (100 / (1 + rs))
+    out.loc[(loss == 0) & (gain > 0), "rsi"] = 100
+    out.loc[(gain == 0) & (loss > 0), "rsi"] = 0
+    out["rsi"] = out["rsi"].fillna(50)
+
+    ema12 = close.ewm(span=12, adjust=False, min_periods=1).mean()
+    ema26 = close.ewm(span=26, adjust=False, min_periods=1).mean()
+    out["macd"] = ema12 - ema26
+    out["macd_signal"] = out["macd"].ewm(span=9, adjust=False, min_periods=1).mean()
+
+    previous_close = close.shift(1)
+    true_range = pd.concat([
+        high - low, (high - previous_close).abs(), (low - previous_close).abs()
+    ], axis=1).max(axis=1)
+    out["atr"] = true_range.ewm(alpha=1/14, adjust=False, min_periods=1).mean()
+    out["momentum"] = close.pct_change(5).replace([float("inf"), -float("inf")], 0).fillna(0) * 100
+    return out.replace([float("inf"), -float("inf")], pd.NA).ffill().fillna(0)
+
+
+def market_structure(frame, lookback=20):
+    """Candle-derived liquidity/swing and order-block estimates (heuristics)."""
+    recent = frame.tail(max(lookback, 5)).copy()
+    last = recent.iloc[-1]
+    prior = recent.iloc[:-1]
+    bsl = safe_float(prior["high"].max(), safe_float(last["high"])) if not prior.empty else safe_float(last["high"])
+    ssl = safe_float(prior["low"].min(), safe_float(last["low"])) if not prior.empty else safe_float(last["low"])
+    high_now, low_now, close_now = safe_float(last["high"]), safe_float(last["low"]), safe_float(last["close"])
+    bsl_sweep = high_now > bsl and close_now < bsl
+    ssl_sweep = low_now < ssl and close_now > ssl
+
+    bull_ob = bear_ob = None
+    rows = frame.tail(12).reset_index(drop=True)
+    for i in range(len(rows) - 1, 0, -1):
+        candle = rows.iloc[i - 1]
+        nxt = rows.iloc[i]
+        o, c = safe_float(candle["open"]), safe_float(candle["close"])
+        no, nc = safe_float(nxt["open"]), safe_float(nxt["close"])
+        if c < o and nc > no and nc > safe_float(candle["high"]):
+            bull_ob = (safe_float(candle["low"]), safe_float(candle["high"]))
+            break
+    for i in range(len(rows) - 1, 0, -1):
+        candle = rows.iloc[i - 1]
+        nxt = rows.iloc[i]
+        o, c = safe_float(candle["open"]), safe_float(candle["close"])
+        no, nc = safe_float(nxt["open"]), safe_float(nxt["close"])
+        if c > o and nc < no and nc < safe_float(candle["low"]):
+            bear_ob = (safe_float(candle["low"]), safe_float(candle["high"]))
+            break
+    return {"bsl": bsl, "ssl": ssl, "bsl_sweep": bsl_sweep,
+            "ssl_sweep": ssl_sweep, "bull_ob": bull_ob, "bear_ob": bear_ob}
+
+
+def get_real_cvd(exchange, symbol, limit=1000):
+    """Trade-level CVD where public recent-trade endpoints are available."""
+    try:
+        if exchange == "BINANCE":
+            data = api_json("https://fapi.binance.com/fapi/v1/aggTrades",
+                            {"symbol": symbol, "limit": min(limit, 1000)})
+            if not isinstance(data, list) or not data:
+                return None
+            buy = sell = 0.0
+            for trade in data:
+                qty = safe_float(trade.get("q"))
+                if trade.get("m") is True: sell += qty
+                else: buy += qty
+            total = buy + sell
+            return (buy - sell) / total * 100 if total else None
+        if exchange == "BYBIT":
+            payload = api_json("https://api.bybit.com/v5/market/recent-trade",
+                               {"category": "linear", "symbol": symbol, "limit": min(limit, 1000)})
+            trades = (payload or {}).get("result", {}).get("list", [])
+            if not trades: return None
+            buy = sum(safe_float(x.get("size")) for x in trades if x.get("side") == "Buy")
+            sell = sum(safe_float(x.get("size")) for x in trades if x.get("side") == "Sell")
+            total = buy + sell
+            return (buy - sell) / total * 100 if total else None
+    except Exception:
+        return None
+    return None
+
+
+def get_futures_orderbook(exchange, symbol, depth=20):
+    """Top-of-book bid/ask size imbalance for supported futures venues."""
+    try:
+        if exchange == "BINANCE":
+            payload = api_json("https://fapi.binance.com/fapi/v1/depth",
+                               {"symbol": symbol, "limit": min(depth, 100)})
+            bids, asks = (payload or {}).get("bids", []), (payload or {}).get("asks", [])
+        elif exchange == "BYBIT":
+            payload = api_json("https://api.bybit.com/v5/market/orderbook",
+                               {"category": "linear", "symbol": symbol, "limit": min(depth, 50)})
+            book = (payload or {}).get("result", {})
+            bids, asks = book.get("b", []), book.get("a", [])
+        elif exchange == "KUCOIN":
+            payload = api_json("https://api-futures.kucoin.com/api/v1/level2/snapshot", {"symbol": symbol})
+            book = (payload or {}).get("data", {})
+            bids, asks = book.get("bids", []), book.get("asks", [])
+        elif exchange == "MEXC":
+            payload = api_json("https://contract.mexc.com/api/v1/contract/depth/" + symbol, {"limit": depth})
+            book = (payload or {}).get("data", {})
+            bids, asks = book.get("bids", []), book.get("asks", [])
+        else:
+            return None, "منصة دفتر الأوامر غير مدعومة"
+
+        def total_size(levels):
+            total = 0.0
+            for level in levels[:depth]:
+                if isinstance(level, dict):
+                    qty = level.get("size", level.get("qty", level.get("v", 0)))
+                else:
+                    qty = level[1] if len(level) > 1 else 0
+                total += safe_float(qty)
+            return total
+
+        bid_size, ask_size = total_size(bids), total_size(asks)
+        total = bid_size + ask_size
+        if total <= 0:
+            return None, "بيانات دفتر الأوامر غير متاحة"
+        imbalance = (bid_size - ask_size) / total * 100
+        return imbalance, f"اختلال دفتر الأوامر {exchange}: {imbalance:+.1f}% (أفضل {depth} مستويات متاحة)"
+    except Exception as exc:
+        return None, f"تعذر قراءة دفتر الأوامر: {exc}"
+
+
 def candle_volume_delta_proxy(frame, lookback=20):
     """Green/red candle volume approximation; not exchange trade-level CVD."""
     recent = frame.tail(lookback)
@@ -674,8 +819,8 @@ def analyze(frame, symbol, settings, exchange="BINANCE"):
         else:
             notes.append(f"📈 OI {exchange}: غير متاح من الواجهة العامة")
 
-        if settings["wall_filter"]:
-            notes.append(f"🧱 دفتر أوامر Binance: {get_orderbook_wall(symbol)}")
+        if settings["wall_filter"] and book_imbalance is None:
+            notes.append("📚 دفتر الأوامر: لم تتوفر بيانات صالحة لهذا الرمز")
 
         if settings["confirm_exchanges"]:
             count, exchanges = check_spot_listings(symbol)
