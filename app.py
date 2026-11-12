@@ -1,4 +1,4 @@
-# BLY7TRADER — V19 interface / Futures intelligence
+# BLY7TRADER — V19.1 interface / Futures intelligence (FIXED FULL)
 # Run: pip install -r requirements.txt && streamlit run BLY7TRADER.py
 # Notes:
 # - CVD below is candle-direction volume proxy, NOT trade-level CVD.
@@ -17,16 +17,16 @@ import requests
 import streamlit as st
 
 st.set_page_config(
-    page_title="BLY7TRADER ULTIMATE V19",
+    page_title="BLY7TRADER ULTIMATE V19.1",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-APP_TITLE = "💎 BLY7TRADER — ULTIMATE V19"
+APP_TITLE = "💎 BLY7TRADER — ULTIMATE V19.1"
 DB_PATH = os.getenv("BLY7TRADER_DB", "bly7trader_memory.db")
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "BLY7TRADER/19.2"})
+SESSION.headers.update({"User-Agent": "BLY7TRADER/19.1"})
 TIMEOUT = 8
 STABLES = {"USDCUSDT", "BUSDUSDT", "DAIUSDT", "FDUSDUSDT", "USDEUSDT"}
 CAIRO = ZoneInfo("Africa/Cairo")
@@ -117,19 +117,29 @@ def init_db():
         conn.commit()
 
 
+def calc_pnl_pct(side, entry, exit_price):
+    if entry <= 0 or exit_price <= 0:
+        return 0.0
+    if side == "LONG":
+        return (exit_price - entry) / entry * 100
+    return (entry - exit_price) / entry * 100
+
+
 def update_trade_outcome(signal_id, outcome):
     """Manual override remains available for corrections; auto tracker is primary."""
     if outcome not in ("WIN", "LOSS", "BREAKEVEN", "OPEN"):
         return
     with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute("SELECT side, price, entry, stop, tp1 FROM signals WHERE id=?", (signal_id,)).fetchone()
+        row = conn.execute("SELECT side, entry, stop, tp1, tp2, tp3 FROM signals WHERE id=?", (signal_id,)).fetchone()
         if not row:
             return
-        side, price, entry, stop, tp1 = row
-        pnl = ((tp1-entry)/entry*100) if side == "LONG" else ((entry-tp1)/entry*100)
-        if outcome == "LOSS":
-            pnl = ((stop-entry)/entry*100) if side == "LONG" else ((entry-stop)/entry*100)
-        elif outcome in ("OPEN", "BREAKEVEN"):
+        side, entry, stop, tp1, tp2, tp3 = row
+        if outcome == "WIN":
+            # Manual WIN defaults to TP1 if no TP hit info, keep conservative
+            pnl = calc_pnl_pct(side, entry, tp1)
+        elif outcome == "LOSS":
+            pnl = calc_pnl_pct(side, entry, stop)
+        else:
             pnl = 0.0
         closed = None if outcome == "OPEN" else datetime.now(timezone.utc).isoformat()
         status = "ENTRY_PENDING" if outcome == "OPEN" else outcome
@@ -145,14 +155,14 @@ def get_current_futures_price(exchange, symbol):
             data = api_json("https://fapi.binance.com/fapi/v1/ticker/price", {"symbol": symbol})
             return safe_float((data or {}).get("price"), 0) or None
         if exchange == "BYBIT":
-            data = api_json("https://api.bybit.com/v5/market/tickers", {"category":"linear", "symbol":symbol})
+            data = api_json("https://api.bybit.com/v5/market/tickers", {"category": "linear", "symbol": symbol})
             rows = (data or {}).get("result", {}).get("list", [])
             return safe_float(rows[0].get("lastPrice"), 0) if rows else None
         if exchange == "KUCOIN":
-            data = api_json("https://api-futures.kucoin.com/api/v1/ticker", {"symbol":symbol})
+            data = api_json("https://api-futures.kucoin.com/api/v1/ticker", {"symbol": symbol})
             return safe_float((data or {}).get("data", {}).get("price"), 0) or None
         if exchange == "MEXC":
-            data = api_json("https://contract.mexc.com/api/v1/contract/ticker", {"symbol":symbol})
+            data = api_json("https://contract.mexc.com/api/v1/contract/ticker", {"symbol": symbol})
             payload = (data or {}).get("data")
             if isinstance(payload, list):
                 payload = payload[0] if payload else {}
@@ -167,11 +177,16 @@ def track_open_trades():
     now = datetime.now(timezone.utc).isoformat()
     updated, errors = 0, []
     with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute("SELECT id,exchange,symbol,side,entry,stop,tp1,tp2,tp3,status,last_price,max_favorable_pct,max_adverse_pct FROM signals WHERE outcome='OPEN' ORDER BY id DESC LIMIT 500").fetchall()
+        rows = conn.execute("SELECT id,exchange,symbol,side,entry,stop,tp1,tp2,tp3,status,last_price,max_favorable_pct,max_adverse_pct,entry_hit_at,tp1_hit_at,tp2_hit_at,tp3_hit_at,stop_hit_at FROM signals WHERE outcome='OPEN' ORDER BY id DESC LIMIT 500").fetchall()
+        # Cache price per (exchange,symbol) to avoid duplicate API calls
+        price_cache = {}
         for row in rows:
             (sid, exchange, symbol, side, entry, stop, tp1, tp2, tp3, status,
-             old_price, max_fav, max_adv) = row
-            live = get_current_futures_price(exchange, symbol)
+             old_price, max_fav, max_adv, entry_hit_at_old, tp1_hit_old, tp2_hit_old, tp3_hit_old, stop_hit_old) = row
+            cache_key = (exchange, symbol)
+            if cache_key not in price_cache:
+                price_cache[cache_key] = get_current_futures_price(exchange, symbol)
+            live = price_cache[cache_key]
             if not live or live <= 0:
                 errors.append(f"{exchange}:{symbol}")
                 continue
@@ -181,19 +196,24 @@ def track_open_trades():
                 continue
             stamp = datetime.now(timezone.utc).isoformat()
             if side == "LONG":
-                favorable = (live-entry)/entry*100
-                adverse = (entry-live)/entry*100
+                favorable = (live - entry) / entry * 100
+                adverse = (entry - live) / entry * 100
                 entered = status != "ENTRY_PENDING" or live <= entry
                 stop_hit = live <= stop
                 hit1, hit2, hit3 = live >= tp1, live >= tp2, (tp3 > 0 and live >= tp3)
             else:
-                favorable = (entry-live)/entry*100
-                adverse = (live-entry)/entry*100
+                favorable = (entry - live) / entry * 100
+                adverse = (live - entry) / entry * 100
                 entered = status != "ENTRY_PENDING" or live >= entry
                 stop_hit = live >= stop
                 hit1, hit2, hit3 = live <= tp1, live <= tp2, (tp3 > 0 and live <= tp3)
-            max_fav = max(safe_float(max_fav), favorable)
-            max_adv = max(safe_float(max_adv), adverse)
+            # FIX: MFE/MAE only after entry
+            if entered:
+                max_fav = max(safe_float(max_fav), favorable)
+                max_adv = max(safe_float(max_adv), adverse)
+            else:
+                max_fav = safe_float(max_fav)
+                max_adv = safe_float(max_adv)
             new_status = status
             entry_hit_at = None
             closed_at = None
@@ -204,18 +224,22 @@ def track_open_trades():
                 new_status = "IN_POSITION"
                 entry_hit_at = stamp
             if entered:
-                pnl = ((live-entry)/entry*100) if side == "LONG" else ((entry-live)/entry*100)
+                # Live floating PnL
+                pnl_float = calc_pnl_pct(side, entry, live)
                 # If a polling interval spans both SL and TP, conservatively prioritize SL.
                 if stop_hit:
                     new_status, outcome, closed_at = "STOP_LOSS", "LOSS", stamp
-                    pnl = ((live-entry)/entry*100) if side == "LONG" else ((entry-live)/entry*100)
+                    # FIX: PnL at SL price, not live overshoot
+                    pnl = calc_pnl_pct(side, entry, stop)
                 elif hit3:
                     new_status, outcome, closed_at = "TP3_HIT", "WIN", stamp
-                    pnl = ((live-entry)/entry*100) if side == "LONG" else ((entry-live)/entry*100)
+                    pnl = calc_pnl_pct(side, entry, tp3)
                 elif hit2:
                     new_status = "TP2_HIT"
                 elif hit1:
                     new_status = "TP1_HIT"
+                else:
+                    pnl = None
             conn.execute("""UPDATE signals SET status=?, outcome=?, last_price=?, last_checked_at=?,
                 entry_hit_at=COALESCE(entry_hit_at,?), tp1_hit_at=CASE WHEN ? THEN COALESCE(tp1_hit_at,?) ELSE tp1_hit_at END,
                 tp2_hit_at=CASE WHEN ? THEN COALESCE(tp2_hit_at,?) ELSE tp2_hit_at END,
@@ -231,7 +255,9 @@ def track_open_trades():
             updated += 1
         conn.commit()
     return updated, errors
-    def cornix_signal_text(signal, exchange, timeframe="15m", leverage=1):
+
+
+def cornix_signal_text(signal, exchange, timeframe="15m", leverage=1):
     """Build a structured, Cornix-oriented signal message."""
     symbol = str(signal.get("symbol", "")).replace("/", "")
     side = signal.get("side", "LONG")
@@ -294,12 +320,13 @@ def save_signals(signals, exchange):
         for signal in signals:
             symbol = str(signal.get("symbol", ""))
             side = str(signal.get("side", ""))
+            timeframe = str(signal.get("timeframe", "15m"))
             if not symbol or side not in ("LONG", "SHORT"):
                 continue
             exists = conn.execute(
-                "SELECT id FROM signals WHERE exchange=? AND symbol=? AND side=? "
+                "SELECT id FROM signals WHERE exchange=? AND symbol=? AND side=? AND timeframe=? "
                 "AND created_at >= datetime('now','-20 minutes')",
-                (exchange, symbol, side),
+                (exchange, symbol, side, timeframe),
             ).fetchone()
             if exists:
                 continue
@@ -320,7 +347,7 @@ def save_signals(signals, exchange):
                     safe_float(signal.get("tp3")), safe_float(signal.get("funding_pct")),
                     safe_float(signal.get("oi_change_pct")), "FUTURES", "ENTRY_PENDING",
                     safe_float(signal.get("price")), details,
-                    signal.get("timeframe", "15m"), safe_float(signal.get("leverage"), 1),
+                    timeframe, safe_float(signal.get("leverage"), 1),
                 ),
             )
             saved += 1
@@ -371,7 +398,9 @@ def send_signal_batch(signals):
         ok, _ = send_telegram(format_telegram(signal))
         sent += int(ok)
     return sent
-    # ----------------------------- Indicators -----------------------------
+
+
+# ----------------------------- Indicators -----------------------------
 
 def add_indicators(df):
     if df is None or df.empty:
@@ -684,7 +713,7 @@ def fetch_orderbook_imbalance(exchange, symbol):
         return None
 
 
-def build_trade_signal(exchange, symbol, timeframe="5m", limit=300):
+def build_trade_signal(exchange, symbol, timeframe="5m", limit=300, leverage=1):
     raw = fetch_futures_klines(exchange, symbol, timeframe, limit)
     df = add_indicators(raw)
     if df.empty or len(df) < 30:
@@ -701,6 +730,7 @@ def build_trade_signal(exchange, symbol, timeframe="5m", limit=300):
     funding = fetch_funding(exchange, symbol)
     oi_change = fetch_open_interest_change(exchange, symbol)
     imbalance = fetch_orderbook_imbalance(exchange, symbol)
+    in_killzone, killzone_name = killzone_status()
 
     long_score = 0
     short_score = 0
@@ -759,6 +789,10 @@ def build_trade_signal(exchange, symbol, timeframe="5m", limit=300):
         elif last["close"] < prev["close"]:
             short_score += 1
             reasons_short.append("ارتفاع OI مع هبوط السعر")
+    if in_killzone:
+        # Small boost only, not decisive
+        long_score += 0
+        short_score += 0
 
     side = "LONG" if long_score >= short_score else "SHORT"
     score = max(long_score, short_score)
@@ -792,10 +826,14 @@ def build_trade_signal(exchange, symbol, timeframe="5m", limit=300):
         "reasons": reasons_long if is_long else reasons_short,
         "change_pct": safe_float((last["close"] / df.iloc[-2]["close"] - 1) * 100),
         "timeframe": timeframe,
+        "leverage": safe_float(leverage, 1),
+        "killzone": killzone_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "liquidity_note": "BSL/SSL تقديرات من الشموع وليست خريطة تصفيات فعلية",
     }
-    # ----------------------------- Pump / Dump Scanner -----------------------------
+
+
+# ----------------------------- Pump / Dump Scanner -----------------------------
 
 def scan_pump_dump(exchange="BINANCE", limit=80, timeframe="5m"):
     symbols = fetch_futures_symbols(exchange, limit)
@@ -916,8 +954,6 @@ def dex_pair_metrics(pair):
 def scan_dex(chain="bsc", limit=80, min_liquidity=10000):
     candidates = []
     seen = set()
-
-    # Search common BSC quote assets; latest profiles add newly promoted tokens.
     queries = ["WBNB", "USDT", "BSC"]
     for query in queries:
         for pair in dex_search_pairs(query):
@@ -928,7 +964,7 @@ def scan_dex(chain="bsc", limit=80, min_liquidity=10000):
                 seen.add(pair_id)
                 candidates.append(pair)
 
-    profiles = dex_latest_profiles()
+    profiles = dex_latest_profiles()[:20]
     for profile in profiles:
         if profile.get("chainId", "").lower() != chain.lower():
             continue
@@ -1023,7 +1059,6 @@ def update_learning_score():
     profile = learning_profile()
     if profile["total"] < 10:
         return 0
-    # Small conservative adjustment only; not a predictive ML model.
     return max(-2, min(2, round((profile["win_rate"] - 50) / 20, 1)))
 
 
@@ -1094,7 +1129,10 @@ def render_learning_section():
             data=csv_data,
             file_name="BLY7TRADER_trade_history.csv",
             mime="text/csv",
-                        )# ----------------------------- Main UI -----------------------------
+        )
+
+
+# ----------------------------- Main UI -----------------------------
 
 def render_market_scanner():
     st.subheader("🔎 Futures Scanner — ماسح العقود")
@@ -1116,6 +1154,9 @@ def render_market_scanner():
         limit = st.slider("عدد العملات", 10, 100, 40, 10, key="scan_limit")
     with c4:
         min_score = st.slider("أقل قوة للإشارة", 3, 10, 5, key="scan_min_score")
+    leverage = st.slider("الرافعة للعرض في Cornix (عرض فقط)", 1, 50, 10, key="scan_leverage")
+    kz_active, kz_name = killzone_status()
+    st.caption(f"Killzone: {kz_name} — {'داخل النافذة' if kz_active else 'خارج النافذة'}")
 
     if st.button("🚀 افحص السوق الآن", type="primary", key="run_futures_scan"):
         with st.spinner("جاري فحص عقود Futures وجمع البيانات..."):
@@ -1125,7 +1166,7 @@ def render_market_scanner():
             status = st.empty()
             for index, symbol in enumerate(symbols):
                 status.text(f"فحص {symbol} — {index + 1}/{len(symbols)}")
-                signal = build_trade_signal(exchange, symbol, timeframe, 300)
+                signal = build_trade_signal(exchange, symbol, timeframe, 300, leverage=leverage)
                 if signal and signal["score"] >= min_score:
                     results.append(signal)
                 progress.progress((index + 1) / max(len(symbols), 1))
@@ -1139,6 +1180,9 @@ def render_market_scanner():
             f"انتهى الفحص: {len(results)} إشارة مطابقة، "
             f"وتم حفظ {saved} إشارة جديدة."
         )
+        if results and st.button("📩 إرسال الكل لتليجرام", key="send_all_telegram"):
+            sent = send_signal_batch(results)
+            st.info(f"تم إرسال {sent}/{len(results)} إشارة")
 
     results = st.session_state.get("latest_signals", [])
     if not results:
@@ -1178,7 +1222,7 @@ def render_market_scanner():
             )
             st.write("**أسباب الإشارة:**", " — ".join(signal["reasons"]))
             cornix_text = cornix_signal_text(
-                signal, exchange, timeframe, 1
+                signal, exchange, timeframe, signal.get("leverage", leverage)
             )
             st.text_area(
                 "صيغة الإشارة المتوافقة مع إعدادات Cornix",
