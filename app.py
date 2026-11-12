@@ -628,7 +628,7 @@ def send_trade_update(update):
     msg=("💎 <b>BLY7TRADER UPDATE</b>\n━━━━━━━━━━━━━━━━━━\n🪙 <b>"+update['symbol']+"</b>\nDirection: <b>"+update['side']+"</b>\nStatus: <b>"+update['status']+"</b>\nPrice: <code>"+f"{update['last_price']:.10g}"+"</code>\nPnL: <b>"+f"{update['pnl_pct']:.2f}%"+"</b>\n━━━━━━━━━━━━━━━━━━")
     return send_telegram(msg)
 def initialize_session():
-    defaults={"min_score":75,"scan_limit":100,"timeframe":"15m","enable_long":True,"enable_short":True,"btc_filter":False,"learning_enabled":False,"telegram_enabled":True,"minimum_rr":1.8,"risk_percent":1.0,"last_scan":None,"last_scan_result":None,"auto_refresh":False}
+    defaults={"min_score":75,"scan_limit":100,"timeframe":"15m","enable_long":True,"enable_short":True,"btc_filter":True,"learning_enabled":True,"telegram_enabled":True,"minimum_rr":1.8,"risk_percent":1.0,"last_scan":None,"last_scan_result":None,"auto_refresh":False}
     for k,v in defaults.items():
         if k not in st.session_state: st.session_state[k]=v
 initialize_session()
@@ -640,14 +640,8 @@ def render_sidebar():
     st.sidebar.markdown("### Signal Direction")
     st.session_state.enable_long=st.sidebar.checkbox("Enable LONG", value=st.session_state.enable_long)
     st.session_state.enable_short=st.sidebar.checkbox("Enable SHORT", value=st.session_state.enable_short)
-    # REMOVED by user request: Intelligence Filters + Minimum RR + Risk% sliders
-    # Fixed safe values inside code (not editable) so they can never block signals again:
-    # BTC filter OFF (was blocking LONG/SHORT), Learning OFF, Telegram ON, Min RR = 1.8 (NOT 3.60), Risk = 1.0%
-    st.session_state.btc_filter=False
-    st.session_state.learning_enabled=False
-    st.session_state.telegram_enabled=True
-    st.session_state.minimum_rr=1.8
-    st.session_state.risk_percent=1.0
+    # REMOVED per user: Intelligence Filters + Min RR + Risk% sliders. Fixed safe values:
+    st.session_state.btc_filter=False; st.session_state.learning_enabled=False; st.session_state.telegram_enabled=True; st.session_state.minimum_rr=1.8; st.session_state.risk_percent=1.0
     st.sidebar.markdown("---"); st.sidebar.caption("TRADE WITH BLY7 TRADER")
 def render_dashboard_metrics():
     stats=get_performance_stats(); health=check_mexc_connection(); tickers=get_mexc_tickers()
@@ -684,49 +678,52 @@ def render_learning_dashboard():
     st.metric("Profit Factor", f"{stats['profit_factor']:.2f}")
     learning=learning_profile(); st.write(f"Learning Adjustment: {learning['adjustment']}")
     st.caption("Learning adjustment is a simple statistical adjustment, not a trained machine-learning model.")
-# ===== DIAGNOSTIC: why zero signals? =====
-def debug_top_scores(settings=None, limit=10):
-    """Return LONG/SHORT scores for top coins WITHOUT threshold, so user sees why they were rejected."""
-    settings = settings or {}
-    universe = get_tradeable_universe(min_volume=0, scan_limit=limit)
-    out = []
+def check_kline_health():
+    f = get_mexc_klines("BTC_USDT", "15m", 50); tick = get_mexc_ticker("BTC_USDT")
+    return {"btc_klines_rows": len(f), "btc_price": (tick.get("last_price") if tick else None), "klines_ok": (not f.empty and len(f) >= 30)}
+
+def fast_scan_market(settings=None):
+    """FAST: 1 kline call per symbol. Slow calls (MTF/orderbook/funding) only for promising coins."""
+    settings = settings or {}; start = time.time()
+    scan_limit = safe_int(settings.get("scan_limit", 100), 100); timeframe = settings.get("timeframe", "15m")
+    universe = get_tradeable_universe(min_volume=0, scan_limit=scan_limit)
+    if universe.empty: return {"signals": [], "scanned": 0, "duration": 0, "status": "NO_MARKET_DATA", "debug": []}
+    signals, debug = [], []; min_score = safe_int(settings.get("min_score", 75), 75)
     for _, row in universe.iterrows():
         sym = row["symbol"]
         try:
-            feats = extract_market_features(sym, settings.get("timeframe", "15m"))
-            if not feats:
-                out.append({"Symbol": sym, "LONG": 0, "SHORT": 0, "RSI": 0, "Volume": 0, "Trend": "NO_KLINES", "Note": "Klines empty - MEXC kline API did not return candles"})
-                continue
-            mtf = get_multi_timeframe_trend(sym)
-            ob = get_mexc_orderbook(sym, 20)
-            der = get_derivatives_features(sym)
-            ls = calculate_signal_score(feats, "LONG", mtf, ob, der)
-            ss = calculate_signal_score(feats, "SHORT", mtf, ob, der)
-            out.append({"Symbol": sym, "LONG": ls["score"], "SHORT": ss["score"], "RSI": round(feats["rsi"], 1), "Volume": round(feats["volume_ratio"], 2), "Trend": feats["trend"], "Note": " | ".join((ls["reasons"][:3] + ls["warnings"][:2]))})
-        except Exception as exc:
-            out.append({"Symbol": sym, "LONG": 0, "SHORT": 0, "RSI": 0, "Volume": 0, "Trend": "ERROR", "Note": str(exc)[:120]})
-    return out
-
-def check_kline_health():
-    """Quick API health check shown in diagnosis."""
-    f = get_mexc_klines("BTC_USDT", "15m", 50)
-    tick = get_mexc_ticker("BTC_USDT")
-    return {"btc_klines_rows": len(f), "btc_price": (tick.get("last_price") if tick else None), "klines_ok": (not f.empty and len(f) >= 30)}
+            raw = get_mexc_klines(sym, timeframe, 300)
+            if raw.empty:
+                debug.append({"Symbol": sym, "LONG": 0, "SHORT": 0, "RSI": 0, "Volume": 0, "Trend": "NO_KLINES", "Note": "Klines empty"}); continue
+            frame = add_indicators(raw)
+            if frame.empty: continue
+            cur = frame.iloc[-1]
+            feats = {"symbol": sym, "timeframe": timeframe, "frame": frame, "price": safe_float(cur["close"]), "ema9": safe_float(cur["ema9"]), "ema21": safe_float(cur["ema21"]), "ema50": safe_float(cur["ema50"]), "ema200": safe_float(cur["ema200"]), "rsi": safe_float(cur["rsi"]), "macd": safe_float(cur["macd"]), "macd_signal": safe_float(cur["macd_signal"]), "macd_hist": safe_float(cur["macd_hist"]), "atr": safe_float(cur["atr"]), "atr_pct": safe_float(cur["atr_pct"]), "momentum": safe_float(cur["momentum"]), "momentum_3": safe_float(cur["momentum_3"]), "volume_ratio": safe_float(cur["volume_ratio"]), "vwap": safe_float(cur["vwap"]), "trend": classify_trend(frame), "volatility": detect_volatility_regime(frame), "structure": get_market_structure(frame), "fvg": detect_fvg(frame), "order_blocks": detect_order_blocks(frame), "sweeps": detect_liquidity_sweep(frame), "volume": detect_volume_anomaly(frame), "cvd": get_cvd_proxy(frame)}
+            ql = calculate_signal_score(feats, "LONG", {}, None, {}); qs = calculate_signal_score(feats, "SHORT", {}, None, {})
+            debug.append({"Symbol": sym, "LONG": ql["score"], "SHORT": qs["score"], "RSI": round(feats["rsi"], 1), "Volume": round(feats["volume_ratio"], 2), "Trend": feats["trend"], "Note": " | ".join((ql["reasons"][:3] if ql["score"] >= qs["score"] else qs["reasons"][:3]))})
+            if max(ql["score"], qs["score"]) < 45: continue
+            mtf = get_multi_timeframe_trend(sym); ob = get_mexc_orderbook(sym, 20); der = get_derivatives_features(sym)
+            for side in (["LONG"] if settings.get("enable_long", True) else []) + (["SHORT"] if settings.get("enable_short", True) else []):
+                sd = calculate_signal_score(feats, side, mtf, ob, der)
+                if sd["score"] < min_score: continue
+                levels = calculate_trade_levels(feats["price"], feats["atr"], side, 1.8)
+                if not levels: continue
+                signals.append({"exchange": "MEXC", "symbol": sym, "side": side, "timeframe": timeframe, "score": sd["score"], "price": feats["price"], "entry": levels["entry"], "stop": levels["stop"], "tp1": levels["tp1"], "tp2": levels["tp2"], "tp3": levels["tp3"], "risk_pct": levels["risk_pct"], "rr": levels["rr"], "atr": feats["atr"], "rsi": feats["rsi"], "volume_ratio": feats["volume_ratio"], "momentum": feats["momentum"], "funding_pct": safe_float(der.get("funding_rate", 0)) * 100, "oi_change_pct": 0, "cvd_proxy": feats["cvd"]["normalized"], "mtf": mtf, "reasons": sd["reasons"], "warnings": sd["warnings"], "created_at": utc_iso(), "status": "ENTRY_PENDING", "outcome": "OPEN"})
+        except Exception as exc: log_event(f"Fast scan failed {sym}: {exc}", "warning")
+    signals.sort(key=lambda x: x["score"], reverse=True); debug.sort(key=lambda x: max(x["LONG"], x["SHORT"]), reverse=True)
+    duration = time.time() - start
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("INSERT INTO scan_history (scanned_at, symbols_scanned, signals_found, scan_duration, status) VALUES (?,?,?,?,?)", (utc_iso(), len(universe), len(signals), duration, "OK")); conn.commit()
+    except Exception: pass
+    return {"signals": signals, "scanned": len(universe), "duration": duration, "status": "OK", "debug": debug}
 
 def execute_market_scan():
-    settings={"min_score":st.session_state.min_score,"scan_limit":st.session_state.scan_limit,"timeframe":st.session_state.timeframe,"enable_long":st.session_state.enable_long,"enable_short":st.session_state.enable_short,"btc_filter":False,"learning_enabled":False,"minimum_rr":1.8,"risk_percent":1.0,"min_volume":0}
-    with st.spinner("Scanning MEXC Futures contracts..."): result=scan_market(settings)
-    # AUTO-FALLBACK: if zero signals, retry lower thresholds automatically so scan never returns empty for no reason
-    if len(result["signals"]) == 0 and settings.get("min_score", 75) > 50:
-        for fallback_score in [60, 50]:
-            if len(result["signals"]) > 0: break
-            st.warning(f"No signals at {settings['min_score']} - retrying automatically at {fallback_score}...")
-            settings2 = dict(settings); settings2["min_score"] = fallback_score
-            result = scan_market(settings2)
-            if len(result["signals"]) > 0:
-                st.session_state.min_score = fallback_score
-                st.info(f"Found signals at score {fallback_score} (market is weak for 75 right now)")
-                break
+    settings={"min_score":st.session_state.min_score,"scan_limit":st.session_state.scan_limit,"timeframe":st.session_state.timeframe,"enable_long":st.session_state.enable_long,"enable_short":st.session_state.enable_short,"btc_filter":st.session_state.btc_filter,"learning_enabled":st.session_state.learning_enabled,"minimum_rr":st.session_state.minimum_rr,"risk_percent":st.session_state.risk_percent,"min_volume":0}
+    with st.spinner("Scanning MEXC Futures contracts (fast mode)..."): result=fast_scan_market(settings)
+    if len(result["signals"]) == 0 and result.get("debug"):
+        st.warning(f"No signals at {settings['min_score']}. Top coins right now (closest to passing):")
+        st.dataframe(pd.DataFrame(result["debug"][:10]), use_container_width=True, hide_index=True)
     st.session_state.last_scan=utc_iso(); st.session_state.last_scan_result=result
     saved=save_signals(result["signals"])
     if st.session_state.telegram_enabled:
@@ -765,11 +762,9 @@ def main():
             with st.spinner("Diagnosing..."):
                 health = check_kline_health()
                 st.write(f"Klines BTC: {health['btc_klines_rows']} rows | BTC price: {health['btc_price']} | OK: {health['klines_ok']}")
-                if not health["klines_ok"]:
-                    st.error("المشكلة في MEXC Kline API: مفيش شموع راجعة. جرّب VPN / غيّر الشبكة / استنى دقيقة واعمل Scan تاني. التليجرام والتيكر شغالين لكن الشموع فاضية.")
-                dbg = debug_top_scores({"timeframe": st.session_state.timeframe}, limit=10)
+                if not health["klines_ok"]: st.error("المشكلة في MEXC Kline API: مفيش شموع راجعة. استنى دقيقة واعمل Scan تاني.")
+                dbg = fast_scan_market({"timeframe": st.session_state.timeframe, "scan_limit": 10, "min_score": 999, "enable_long": True, "enable_short": True}).get("debug", [])
                 st.dataframe(pd.DataFrame(dbg), use_container_width=True, hide_index=True)
-                st.caption("لو LONG/SHORT كلهم تحت 50 يبقى السوق فعلا هادي. لو Trend = NO_KLINES يبقى المشكلة في API مش في الفلاتر.")
         result=st.session_state.last_scan_result
         if result: render_signals(result["signals"])
         if st.session_state.last_scan: st.caption(f"Last scan: {st.session_state.last_scan}")
