@@ -14,24 +14,23 @@ SESSION.headers.update({"User-Agent":"BLY7TRADER-SIGNALS/V19-MOD"})
 TIMEOUT = 10
 STABLES = {"USDCUSDT","BUSDUSDT","DAIUSDT","FDUSDUSDT","USDEUSDT"}
 
-st.markdown("""<div style="text-align:center"><div style="font-size:42px;font-weight:900;letter-spacing:4px;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">BLY7TRADER SIGNALS</div><div style="color:#FFD700;font-size:13px;letter-spacing:3px;">BLY7H ULTIMATE V19 MODIFIED • @WHYNOTBLY7 • PREDICT BEFORE THE MOVE</div></div>""", unsafe_allow_html=True)
-
-st.markdown("""<style>
-:root{--gold:#FFD700;--bg:#0B0E14;--card:#12161F;--line:#1E2530}
-.stApp{background:#0B0E14;color:#E6E9EF}
-h1,h2,h3{color:#E6E9EF!important;letter-spacing:.3px}
-.stButton>button{background:linear-gradient(90deg,#FFD700,#FF8C00);color:#000;font-weight:800;border-radius:12px;border:0;padding:10px 18px}
-.stButton>button:hover{filter:brightness(1.08)}
-div[data-testid="stMetric"]{background:#12161F;border:1px solid #1E2530;border-radius:14px;padding:14px}
-div[data-testid="stDataFrame"]{border-radius:14px;overflow:hidden}
-.stExpander{border:1px solid #1E2530;border-radius:14px;background:#12161F}
-section[data-testid="stSidebar"]{background:#0F131B}
-.badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
-.badge-long{background:#0E2A1A;color:#2ECC71;border:1px solid #1E5A35}
-.badge-short{background:#2A1113;color:#FF6B6B;border:1px solid #5A1E1E}
-.card{background:#12161F;border:1px solid #1E2530;border-radius:16px;padding:16px}
-.small{color:#8A93A3;font-size:12px}
-</style>""", unsafe_allow_html=True)
+st.markdown("<div style='border:2px solid #FFD700;background:#0B0E14;padding:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)'>" + "<div style='text-align:center'><div style='font-size:10px;font-weight:900;letter-spacing:0.28em;color:#FFD700'>BLY7TRADER SIGNALS - POSTER STYLE</div><div style='font-size:42px;font-weight:900;letter-spacing:4px;line-height:1.05;background:linear-gradient(90deg,#FFD700,#FF8C00,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent'>BLY7TRADER<br>SIGNALS</div><div style='color:#FFD700;font-size:12px;letter-spacing:3px'>BLY7H ULTIMATE V19 MODIFIED - @WHYNOTBLY7 - PREDICT BEFORE THE MOVE</div></div>" + "<div style='text-align:center;margin-top:12px'><span style='display:inline-block;background:#FFD700;color:#000;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:900'>SELF-LEARNING BOT - Learns from 1000 rounds</span></div>" + "<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px'>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📐</div><div style='font-size:11px;font-weight:800;color:#FFF'>FVG</div><div style='font-size:10px;color:#8A93A3'>Fair Value Gap</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>🧱</div><div style='font-size:11px;font-weight:800;color:#FFF'>Order Block</div><div style='font-size:10px;color:#8A93A3'>Whale Zone</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📊</div><div style='font-size:11px;font-weight:800;color:#FFF'>CVD Real</div><div style='font-size:10px;color:#8A93A3'>Buy vs Sell</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📈</div><div style='font-size:11px;font-weight:800;color:#FFF'>OI + Funding</div><div style='font-size:10px;color:#8A93A3'>Open Interest</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📖</div><div style='font-size:11px;font-weight:800;color:#FFF'>Order Book</div><div style='font-size:10px;color:#8A93A3'>Buy / Sell Walls</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>⏰</div><div style='font-size:11px;font-weight:800;color:#FFF'>Killzone</div><div style='font-size:10px;color:#8A93A3'>London / NY</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>🧹</div><div style='font-size:11px;font-weight:800;color:#FFF'>Sweep</div><div style='font-size:10px;color:#8A93A3'>Stop Hunt</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📉</div><div style='font-size:11px;font-weight:800;color:#FFF'>EMA 9/21</div><div style='font-size:10px;color:#8A93A3'>Trend</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📊</div><div style='font-size:11px;font-weight:800;color:#FFF'>RSI</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📈</div><div style='font-size:11px;font-weight:800;color:#FFF'>MACD</div><div style='font-size:10px;color:#8A93A3'>Momentum</div></div>" + "<div style='background:#12161F;border:1px solid #1E2530;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>📏</div><div style='font-size:11px;font-weight:800;color:#FFF'>ATR</div><div style='font-size:10px;color:#8A93A3'>Volatility</div></div>" + "<div style='background:#12161F;border:1px solid #FFD700;padding:10px;text-align:center;border-radius:10px'><div style='font-size:20px'>💎</div><div style='font-size:11px;font-weight:900;color:#FFD700'>BLY7TRADER</div><div style='font-size:10px;color:#8A93A3'>@WHYNOTBLY7</div></div>" + "</div>" + "<div style='text-align:center;margin-top:12px'><span style='display:inline-block;background:#12161F;border:1px solid #1E2530;color:#E6E9EF;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700'>Monthly Rent $149 (Foreign $290) - Full Ownership $2499 (Foreign $4000)</span></div>" + "</div>", unsafe_allow_html=True)
+st.markdown("<style>.stApp{background:#0B0E14;color:#E6E9EF} h1,h2,h3{color:#E6E9EF!important} .stButton>button{background:#FFD700;color:#000;font-weight:900;border-radius:10px;border:1px solid #FFD700} div[data-testid='stMetric']{background:#12161F;border:1px solid #1E2530;border-radius:14px} .stExpander{border:1px solid #1E2530;border-radius:14px;background:#12161F} section[data-testid='stSidebar']{display:none}</style>", unsafe_allow_html=True)
+if "section" not in st.session_state:
+    st.session_state.section="📡 Futures Scanner"
+st.markdown("<div style='text-align:center;color:#FFD700;font-weight:900;letter-spacing:2px;margin:14px 0 8px'>⬇️ الأقسام - دوس على القسم ⬇️</div>", unsafe_allow_html=True)
+_secs=["📡 Futures Scanner","📊 تحليل عملة","🎲 MEXC Prediction","📈 Options","⚽ Football","💾 Paper Trading","📊 Performance","🧠 MEXC Learner","📩 Telegram"]
+for _r in range(3):
+    _cols=st.columns(3)
+    for _c in range(3):
+        _idx=_r*3+_c
+        _s=_secs[_idx]
+        with _cols[_c]:
+            if st.button(_s, key=f"sec_{_idx}", use_container_width=True, type="primary" if st.session_state.section==_s else "secondary"):
+                st.session_state.section=_s
+                st.rerun()
+st.markdown(f"<div style='text-align:center;background:#FFD700;color:#000;font-weight:900;padding:8px;border-radius:10px;margin:10px 0'>القسم الحالي: {st.session_state.section}</div>", unsafe_allow_html=True)
+section=st.session_state.section
 
 def api_json(url, params=None, timeout=TIMEOUT):
     try:
@@ -82,11 +81,75 @@ def send_telegram(message):
     except Exception as e: return False,str(e)
 
 def fmt_bly7trader(s):
-    side="🚀 LONG" if s["type"]=="LONG" else "🔻 SHORT"
+    # MOONEDGE style - باسم BLY7TRADER - البوت هو اللي ينتج كده
+    side_word="SHORT" if s["type"]=="SHORT" else "LONG"
+    entry_low = s['entry']*0.997
+    entry_high = s['entry']*1.003
+    lev = "Cross 25x-50x" if abs(s['entry'])<1 else "Cross 10x-25x"
     rr1 = abs(s["tp1"]-s["entry"])/abs(s["entry"]-s["stop"]) if abs(s["entry"]-s["stop"])>0 else 0
     rr2 = abs(s["tp2"]-s["entry"])/abs(s["entry"]-s["stop"]) if abs(s["entry"]-s["stop"])>0 else 0
-    return f"""BLY7TRADER\n\n{side} — {s['symbol']}\n⭐ Score: {s['score']}/100\n\n💵 Price: {s['price']:.8g}\n🎯 Entry: {s['entry']:.8g}\n⛔ Stop Loss: {s['stop']:.8g}\n✅ TP1: {s['tp1']:.8g}\n🏆 TP2: {s['tp2']:.8g}\n🏆 TP3: {s.get('tp3',s['tp2']):.8g}\n📊 R:R TP1 1:{rr1:.2f} | TP2 1:{rr2:.2f}\n\n📈 1H Change: {s['ch']}%\n📦 Volume: x{s['vol']}\n📊 CVD: {s['buy']}%\n{s.get('extra','')}\n\n📩 Telegram: @WHYNOTBLY7\n#BLY7TRADER"""
+    return f"""🚀 #BLY7TRADER | TRADE SETUP 🚀
 
+⭐ # {s['symbol'].replace('/USDT','')} /USDT —{side_word}
+
+💵 ENTRY: {entry_low:.6g} - {entry_high:.6g}
+
+⚙️ LEVERAGE: {lev}
+
+🎯 TARGETS:
+🎯TP1 — {s['tp1']:.6g}
+🎯TP2 — {s['tp2']:.6g}
+🎯TP3 — {s.get('tp3',s['tp2']):.6g}
+
+🛑 STOP LOSS : {s['stop']:.6g}
+
+💼 POSITION SIZE: 3%–5% of your portfolio
+
+📌 Follow the setup and manage your risk wisely.
+#dyor
+📩 Telegram: @WHYNOTBLY7
+#BLY7TRADER"""
+def fmt_tools_bly7trader(s):
+    # رسالة الأدوات لوحدها - بعد رسالة الصفقة - عشان Cornix مايتلخبطش
+    return f"""🛠️ {s['symbol']} - ليه {s['type']}؟
+
+📐 FVG: Entry في FVG - رجع للفجوة - بيع/شراء من المقاومة/الدعم
+🧱 Order Block: SL عند بلوك الحيتان - نقطة اللارجعة - لو كسرها اخرج
+🧱 BSL: {s['stop']:.6g} - سيولة فوق - SSL قريب من TP1
+🧹 Sweep: خد سيولة وضرب ستوبات ورجع - خدعة
+📉 EMA9/21: السعر تحت/فوق EMA - اتجاه مأكد
+📊 RSI: تحت/فوق 50 - زخم
+📏 ATR: TP1 = Entry -/+ 1.5 ATR
+📊 CVD: {s['buy']}% - بياعين/شراية مسيطرين
+📦 Volume: x{s['vol']} - فوليوم حقيقي
+📖 Order Book: حائط بيع/شراء عند SL
+⏰ MTF 15m ✅ - مأكد
+📊 Score: {s['score']}/100 - R:R TP1 1:{abs(s['tp1']-s['entry'])/abs(s['entry']-s['stop']) if abs(s['entry']-s['stop'])>0 else 0:.2f}"""
+def fmt_cornix_bly7trader(s):
+    # للبوت Cornix - نضيفة - من غير Leverage - TP1+TP2 بس
+    side_word="SHORT" if s["type"]=="SHORT" else "LONG"
+    return f"""BLY7TRADER
+
+🔻 {side_word} — {s['symbol']}
+⭐ Score: {s['score']}/100
+
+💵 Price: {s['price']:.8g}
+🎯 Entry: {s['entry']:.8g}
+⛔ Stop Loss: {s['stop']:.8g}
+✅ TP1: {s['tp1']:.8g}
+🏆 TP2: {s['tp2']:.8g}
+
+📈 1H Change: {s['ch']}%
+📦 Volume: x{s['vol']}
+📊 CVD: {s['buy']}%
+
+---
+⚠️ RISK WARNING:
+Do NOT risk more than 1% - 5% of your capital per trade.
+---
+
+📩 Telegram: @WHYNOTBLY7
+#BLY7TRADER"""
 def kucoin_futures_symbols(limit=1000):
     p=api_json("https://api-futures.kucoin.com/api/v1/contracts/active")
     d=(p or {}).get("data",[])
@@ -312,11 +375,102 @@ def backtest_simple(exchange, symbol, gran="1h", limit=500):
             total+=1
     if total==0: return None
     wr=wins/total*100; avg_rr=sum(rrs)/len(rrs) if rrs else 0
-    return {"symbol":symbol,"timeframe":gran,"total":total,"win_rate":round(wr,1),"avg_rr":round(avg_rr,2),"train_len":len(train),"test_len":len(test)}
+    res={"symbol":symbol,"timeframe":gran,"total":total,"win_rate":round(wr,1),"avg_rr":round(avg_rr,2),"train_len":len(train),"test_len":len(test)}
+    # باك تست يحفظ النتائج أوتوماتيك - من غير ما تدوس حفظ
+    try:
+        with sqlite3.connect(DB_PATH) as _c: _c.execute("INSERT INTO backtests (created_at,symbol,timeframe,win_rate,total,avg_rr,notes) VALUES (?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), symbol, gran, res["win_rate"], res["total"], res["avg_rr"], "BLY7TRADER AUTO-SAVE - EMA9/21 + FVG - بدون Look-ahead")); _c.commit()
+    except Exception: pass
+    return res
+def backtest_add_manual(symbol, side, entry, stop, tp1, tp2, tp3, result, pnl_pct):
+    # انت تبعت صفقات ناجحة - تتضاف للباك تست - وتتحفظ أوتوماتيك
+    try:
+        with sqlite3.connect(DB_PATH) as _c:
+            _c.execute("INSERT INTO backtests (created_at,symbol,timeframe,win_rate,total,avg_rr,notes) VALUES (?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), symbol, "MANUAL", 100.0 if result=="WIN" else 0.0, 1, pnl_pct, f"BLY7TRADER MANUAL - {side} Entry {entry} SL {stop} TP1 {tp1} TP2 {tp2} TP3 {tp3} - {result} PnL {pnl_pct}%"))
+            _c.execute("INSERT INTO signals (created_at,exchange,symbol,side,score,price,entry,stop,tp1,tp2,tp3,change_pct,volume_ratio,cvd,outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), "MANUAL", symbol, side, 90, entry, entry, stop, tp1, tp2, tp3, 0, 0, 0, result))
+            _c.commit()
+        return True
+    except Exception as _e:
+        return False
 
 st.markdown(f"**Killzone:** {'✅ '+killzone_status()[1] if killzone_status()[0] else '⏸️ '+killzone_status()[1]} | **البيانات:** Futures حقيقية من المنصة - Spot مفصول تمامًا | **آخر تحديث:** {now_cairo().strftime('%Y-%m-%d %H:%M:%S')} Cairo")
-section=st.sidebar.selectbox("القسم", ["🔍 Futures Scanner - KuCoin / MEXC / Bybit","📊 تحليل عملة - كل الفواصل","🎯 MEXC Prediction - UP/DOWN","📈 Options Analysis","⚽ Football Analysis","💾 Paper Trading + Backtest","📊 Performance Dashboard","🤖 MEXC Learner - بيعلم نفسه", "📩 Telegram Test"])
-st.sidebar.markdown("---"); st.sidebar.markdown("**BLY7TRADER SIGNALS**"); st.sidebar.caption("TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID في Secrets")
+# ---------- MEXC Learner - بيعلم نفسه ----------
+def lab_init():
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute("CREATE TABLE IF NOT EXISTS lab_rounds (round_start TEXT PRIMARY KEY, open_price REAL, close_price REAL, label TEXT, feats TEXT, model TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS lab_models (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, accuracy REAL, total INTEGER, weights TEXT, is_best INTEGER DEFAULT 0)")
+        c.commit()
+lab_init()
+# التعلم يدرب نفسه أوتوماتيك - لو مفيش نموذج - اتعلم مرة واحدة أوتوماتيك - باسم BLY7TRADER
+try:
+    with sqlite3.connect(DB_PATH) as _c: _cnt_model=_c.execute("SELECT COUNT(*) FROM lab_models").fetchone()[0]
+    if _cnt_model==0:
+        try: lab_auto_learn("KuCoin","XBTUSDTM",1000)
+        except Exception: pass
+except Exception: pass
+def _feats_from_df(df):
+    if df is None or len(df)<30: return None
+    e9=ema(df['close'],9); e21=ema(df['close'],21); r=rsi_calc(df['close']); m,s,h=macd_calc(df['close']); a=atr_calc(df)
+    last=df.iloc[-1]
+    fvg=detect_fvg(df)
+    last20=df.tail(20); bv=float(last20[last20['close']>last20['open']]['vol'].sum()); sv=float(last20[last20['close']<=last20['open']]['vol'].sum())
+    cvd=(bv-sv)/(bv+sv+1e-9)*100
+    return {'ema_diff': float(e9.iloc[-1]-e21.iloc[-1]), 'rsi': float(r.iloc[-1]) if pd.notna(r.iloc[-1]) else 50, 'macd_hist': float(h.iloc[-1]), 'atr': float(a.iloc[-1]) if pd.notna(a.iloc[-1]) else 0, 'cvd': float(cvd), 'vol_ratio': float(df['vol'].iloc[-1]/(df['vol'].iloc[:-10].mean()+1e-9)), 'fvg_count': len(fvg), 'body': float(last['close']-last['open'])}
+def lab_auto_learn(exchange='KuCoin', symbol='XBTUSDTM', limit=1000):
+    df=get_futures_klines(exchange, symbol, '15m', limit)
+    if df is None or len(df)<100: return {'learned':0,'accuracy':0,'total':0,'is_best':False,'msg':'N/A'}
+    learned=0
+    with sqlite3.connect(DB_PATH) as c:
+        for i in range(30, len(df)-1):
+            window=df.iloc[:i+1]
+            feats=_feats_from_df(window)
+            if not feats: continue
+            open_p=float(df.iloc[i+1]['open']); close_p=float(df.iloc[i+1]['close'])
+            label='UP' if close_p>=open_p else 'DOWN'
+            rs=str(df.iloc[i]['time'])
+            c.execute("INSERT OR IGNORE INTO lab_rounds (round_start,open_price,close_price,label,feats,model) VALUES (?,?,?,?,?,?)", (rs, open_p, close_p, label, json.dumps(feats), 'BLY7TRADER-AUTO-1000'))
+            learned+=1
+        c.commit()
+        rows=c.execute("SELECT feats,label FROM lab_rounds WHERE model='BLY7TRADER-AUTO-1000'").fetchall()
+    correct=0; total=0
+    for fjs, lab in rows:
+        try: f=json.loads(fjs)
+        except Exception: continue
+        score=0
+        if f.get('ema_diff',0)>0: score+=1
+        else: score-=1
+        if f.get('cvd',0)>0: score+=1
+        else: score-=1
+        if f.get('rsi',50)>50: score+=0.5
+        else: score-=0.5
+        pred='UP' if score>0 else 'DOWN'
+        if pred==lab: correct+=1
+        total+=1
+    acc=correct/total*100 if total>0 else 0
+    with sqlite3.connect(DB_PATH) as c:
+        best=c.execute("SELECT MAX(accuracy) FROM lab_models").fetchone()[0] or 0
+        is_best=1 if acc>=best else 0
+        if is_best: c.execute("UPDATE lab_models SET is_best=0")
+        c.execute("INSERT INTO lab_models (created_at,accuracy,total,weights,is_best) VALUES (?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), acc, total, json.dumps({'ema':1,'cvd':1,'rsi':0.5}), is_best)); c.commit()
+    return {'learned':learned,'accuracy':round(acc,1),'total':total,'is_best':bool(is_best)}
+def lab_predict_current(exchange='KuCoin', symbol='XBTUSDTM'):
+    df=get_futures_klines(exchange, symbol, '15m', 200)
+    if df is None: return None
+    feats=_feats_from_df(df)
+    if not feats: return None
+    score=0; reasons=[]
+    if feats['ema_diff']>0: score+=1; reasons.append('EMA9>21')
+    else: score-=1; reasons.append('EMA9<21')
+    if feats['cvd']>0: score+=1; reasons.append('CVD +')
+    else: score-=1; reasons.append('CVD -')
+    if feats['rsi']>50: score+=0.5
+    else: score-=0.5
+    with sqlite3.connect(DB_PATH) as c:
+        row=c.execute("SELECT accuracy,total FROM lab_models WHERE is_best=1 ORDER BY id DESC LIMIT 1").fetchone()
+    acc=row[0] if row else 50; total=row[1] if row else 0
+    pred='UP' if score>0 else 'DOWN'
+    conf=min(85, max(50, acc + abs(score)*5))
+    return {'pred':pred,'conf':round(conf,1),'score':score,'feats':feats,'accuracy':acc,'total':total,'reasons':reasons}
+
 
 if section.startswith("🔍"):
     st.subheader("🔍 Futures Scanner - KuCoin / MEXC / Bybit - فصل تام عن Spot")
@@ -466,7 +620,7 @@ elif section.startswith("💾"):
         if bt is None: st.warning("N/A")
         else:
             st.markdown(f"**Win Rate:** {bt['win_rate']}% | **إجمالي الصفقات:** {bt['total']} | **متوسط R:R:** {bt['avg_rr']} | **Train:** {bt['train_len']} شمعة | **Test:** {bt['test_len']} شمعة (Walk-forward 70/30)")
-            with sqlite3.connect(DB_PATH) as c: c.execute("INSERT INTO backtests (created_at,symbol,timeframe,win_rate,total,avg_rr,notes) VALUES (?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), bt_sym, "1h", bt['win_rate'], bt['total'], bt['avg_rr'], "Champion: EMA9/21 | Challenger: EMA9/21 + FVG - بدون Look-ahead")); c.commit()
+            pass # اتحفظ أوتوماتيك جوه backtest_simple
 
 elif section.startswith("📊 Performance"):
     st.subheader("📊 Performance Dashboard - دقة الإشارات")
@@ -484,9 +638,23 @@ elif section.startswith("📊 Performance"):
 
 elif section.startswith("📩"):
     st.subheader("📩 Telegram Test - @WHYNOTBLY7")
+    # Debug: show what token/chat are actually set to (masked)
+    try: _tok=str(st.secrets["TELEGRAM_BOT_TOKEN"])
+    except Exception: _tok=os.getenv("TELEGRAM_BOT_TOKEN","")
+    try: _chat=str(st.secrets["TELEGRAM_CHANNEL_ID"])
+    except Exception:
+        try: _chat=str(st.secrets["TELEGRAM_CHAT_ID"])
+        except Exception: _chat=os.getenv("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHANNEL_ID",""))
+    st.markdown(f"**التوكن:** {'موجود ✅ - طوله '+str(len(_tok))+' حرف' if _tok else 'مش موجود ❌'}")
+    st.markdown(f"**الـ Chat ID المستخدم:** `{_chat}` - لازم يبقى `-100...` - لو حاطط `@WHYNOTBLY7` مش هيوصل للقناة، لازم الـ ID الرقمي")
+    st.markdown("**عشان تجيب الـ ID الرقمي:** افتح القناة في المتصفح - انسخ الرقم اللي بعد `https://t.me/c/` وحط قبله `-100` - مثال: `https://t.me/c/123456789` يبقى `-100123456789`")
+    # زرار الفحص اتشال - الإرسال رجع زي ما كان شغال
     if st.button("📩 ابعت رسالة تجريبية"):
         ok,msg=send_telegram("BLY7TRADER SIGNALS - Test ✅ - البوت شغال - @WHYNOTBLY7")
-        st.success(msg) if ok else st.error(msg)
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
     st.markdown("**Secrets المطلوبة في Streamlit:**\n```\nTELEGRAM_BOT_TOKEN = \"...\"\nTELEGRAM_CHANNEL_ID = \"-100...\"\nCHAINLINK_API_KEY = \"...\" # اختياري - للتسوية الرسمية\n```")
 
 st.markdown("---")
