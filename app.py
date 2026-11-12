@@ -102,7 +102,12 @@ def init_db():
         additions = {
             "tp3": "REAL", "closed_at": "TEXT", "pnl_pct": "REAL",
             "result_source": "TEXT", "funding_pct": "REAL", "oi_change_pct": "REAL",
-            "market_type": "TEXT DEFAULT 'FUTURES'"
+            "market_type": "TEXT DEFAULT 'FUTURES'",
+            "status": "TEXT DEFAULT 'ENTRY_PENDING'", "entry_hit_at": "TEXT",
+            "last_price": "REAL", "last_checked_at": "TEXT", "max_favorable_pct": "REAL DEFAULT 0",
+            "max_adverse_pct": "REAL DEFAULT 0", "tp1_hit_at": "TEXT", "tp2_hit_at": "TEXT",
+            "tp3_hit_at": "TEXT", "stop_hit_at": "TEXT", "trade_json": "TEXT",
+            "timeframe": "TEXT", "leverage": "REAL DEFAULT 1", "entry_execution": "TEXT DEFAULT 'PRICE_TOUCH'"
         }
         for name, declaration in additions.items():
             if name not in columns:
@@ -113,6 +118,7 @@ def init_db():
 
 
 def update_trade_outcome(signal_id, outcome):
+    """Manual override remains available for corrections; auto tracker is primary."""
     if outcome not in ("WIN", "LOSS", "BREAKEVEN", "OPEN"):
         return
     with sqlite3.connect(DB_PATH) as conn:
@@ -126,55 +132,207 @@ def update_trade_outcome(signal_id, outcome):
         elif outcome in ("OPEN", "BREAKEVEN"):
             pnl = 0.0
         closed = None if outcome == "OPEN" else datetime.now(timezone.utc).isoformat()
-        conn.execute("UPDATE signals SET outcome=?, closed_at=?, pnl_pct=?, result_source='MANUAL' WHERE id=?",
-                     (outcome, closed, pnl, signal_id))
+        status = "ENTRY_PENDING" if outcome == "OPEN" else outcome
+        conn.execute("UPDATE signals SET outcome=?, status=?, closed_at=?, pnl_pct=?, result_source='MANUAL' WHERE id=?",
+                     (outcome, status, closed, pnl, signal_id))
         conn.commit()
+
+
+def get_current_futures_price(exchange, symbol):
+    """Fetch a live public mark/last price for an open futures signal."""
+    try:
+        if exchange == "BINANCE":
+            data = api_json("https://fapi.binance.com/fapi/v1/ticker/price", {"symbol": symbol})
+            return safe_float((data or {}).get("price"), 0) or None
+        if exchange == "BYBIT":
+            data = api_json("https://api.bybit.com/v5/market/tickers", {"category":"linear", "symbol":symbol})
+            rows = (data or {}).get("result", {}).get("list", [])
+            return safe_float(rows[0].get("lastPrice"), 0) if rows else None
+        if exchange == "KUCOIN":
+            data = api_json("https://api-futures.kucoin.com/api/v1/ticker", {"symbol":symbol})
+            return safe_float((data or {}).get("data", {}).get("price"), 0) or None
+        if exchange == "MEXC":
+            data = api_json("https://contract.mexc.com/api/v1/contract/ticker", {"symbol":symbol})
+            payload = (data or {}).get("data")
+            if isinstance(payload, list):
+                payload = payload[0] if payload else {}
+            return safe_float((payload or {}).get("lastPrice"), 0) or None
+    except Exception:
+        return None
+    return None
+
+
+def track_open_trades():
+    """Poll live prices and auto-resolve entry/TP/SL as theoretical price touches."""
+    now = datetime.now(timezone.utc).isoformat()
+    updated, errors = 0, []
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT id,exchange,symbol,side,entry,stop,tp1,tp2,tp3,status,last_price,max_favorable_pct,max_adverse_pct FROM signals WHERE outcome='OPEN' ORDER BY id DESC LIMIT 500").fetchall()
+        for row in rows:
+            (sid, exchange, symbol, side, entry, stop, tp1, tp2, tp3, status,
+             old_price, max_fav, max_adv) = row
+            live = get_current_futures_price(exchange, symbol)
+            if not live or live <= 0:
+                errors.append(f"{exchange}:{symbol}")
+                continue
+            entry, stop, tp1, tp2 = map(lambda x: safe_float(x), (entry, stop, tp1, tp2))
+            tp3 = safe_float(tp3)
+            if entry <= 0 or stop <= 0:
+                continue
+            stamp = datetime.now(timezone.utc).isoformat()
+            if side == "LONG":
+                favorable = (live-entry)/entry*100
+                adverse = (entry-live)/entry*100
+                entered = status != "ENTRY_PENDING" or live <= entry
+                stop_hit = live <= stop
+                hit1, hit2, hit3 = live >= tp1, live >= tp2, (tp3 > 0 and live >= tp3)
+            else:
+                favorable = (entry-live)/entry*100
+                adverse = (live-entry)/entry*100
+                entered = status != "ENTRY_PENDING" or live >= entry
+                stop_hit = live >= stop
+                hit1, hit2, hit3 = live <= tp1, live <= tp2, (tp3 > 0 and live <= tp3)
+            max_fav = max(safe_float(max_fav), favorable)
+            max_adv = max(safe_float(max_adv), adverse)
+            new_status = status
+            entry_hit_at = None
+            closed_at = None
+            outcome = "OPEN"
+            pnl = None
+            result_source = "LIVE_PRICE_TRACKER"
+            if status == "ENTRY_PENDING" and entered:
+                new_status = "IN_POSITION"
+                entry_hit_at = stamp
+            if entered:
+                pnl = ((live-entry)/entry*100) if side == "LONG" else ((entry-live)/entry*100)
+                # If a polling interval spans both SL and TP, conservatively prioritize SL.
+                if stop_hit:
+                    new_status, outcome, closed_at = "STOP_LOSS", "LOSS", stamp
+                    pnl = ((live-entry)/entry*100) if side == "LONG" else ((entry-live)/entry*100)
+                elif hit3:
+                    new_status, outcome, closed_at = "TP3_HIT", "WIN", stamp
+                    pnl = ((live-entry)/entry*100) if side == "LONG" else ((entry-live)/entry*100)
+                elif hit2:
+                    new_status = "TP2_HIT"
+                elif hit1:
+                    new_status = "TP1_HIT"
+            conn.execute("""UPDATE signals SET status=?, outcome=?, last_price=?, last_checked_at=?,
+                entry_hit_at=COALESCE(entry_hit_at,?), tp1_hit_at=CASE WHEN ? THEN COALESCE(tp1_hit_at,?) ELSE tp1_hit_at END,
+                tp2_hit_at=CASE WHEN ? THEN COALESCE(tp2_hit_at,?) ELSE tp2_hit_at END,
+                tp3_hit_at=CASE WHEN ? THEN COALESCE(tp3_hit_at,?) ELSE tp3_hit_at END,
+                stop_hit_at=CASE WHEN ? THEN COALESCE(stop_hit_at,?) ELSE stop_hit_at END,
+                closed_at=COALESCE(?,closed_at), pnl_pct=COALESCE(?,pnl_pct),
+                result_source=?, max_favorable_pct=?, max_adverse_pct=?
+                WHERE id=?""",
+                (new_status, outcome, live, stamp, entry_hit_at,
+                 hit1, stamp, hit2, stamp, hit3, stamp, stop_hit, stamp,
+                 closed_at, pnl if outcome != "OPEN" else None, result_source,
+                 max_fav, max_adv, sid))
+            updated += 1
+        conn.commit()
+    return updated, errors
+    def cornix_signal_text(signal, exchange, timeframe="15m", leverage=1):
+    """Build a structured, Cornix-oriented signal message."""
+    symbol = str(signal.get("symbol", "")).replace("/", "")
+    side = signal.get("side", "LONG")
+    entry = safe_float(signal.get("entry"))
+    stop = safe_float(signal.get("stop"))
+    tp1 = safe_float(signal.get("tp1"))
+    tp2 = safe_float(signal.get("tp2"))
+    tp3 = safe_float(signal.get("tp3"))
+    if not symbol or not entry or not stop:
+        return ""
+    return (
+        f"{symbol} {side}\n"
+        f"Exchange: {exchange} | Market: FUTURES\n"
+        f"Entry: {entry:.10g}\n"
+        f"Stop: {stop:.10g}\n"
+        f"Take-Profit: {tp1:.10g}, {tp2:.10g}, {tp3:.10g}\n"
+        f"Leverage: {leverage}x\n"
+        f"Timeframe: {timeframe}\n"
+        f"Score: {signal.get('score', 0)}\n"
+        f"RSI: {safe_float(signal.get('rsi')):.2f} | "
+        f"EMA9: {safe_float(signal.get('ema9')):.10g} | "
+        f"EMA21: {safe_float(signal.get('ema21')):.10g}\n"
+        f"MACD: {safe_float(signal.get('macd')):.8g} | "
+        f"ATR: {safe_float(signal.get('atr')):.8g}\n"
+        f"Funding: {safe_float(signal.get('funding_pct')):.5f}% | "
+        f"OI Change: {safe_float(signal.get('oi_change_pct')):.3f}%\n"
+        f"CVD: {safe_float(signal.get('cvd')):.4f} "
+        f"({signal.get('cvd_source', 'proxy')})\n"
+        f"Liquidity: {signal.get('liquidity_note', 'N/A')}\n"
+        f"Generated: {signal.get('created_at', datetime.now(timezone.utc).isoformat())}"
+    )
 
 
 def learning_profile():
     with sqlite3.connect(DB_PATH) as conn:
-        df = pd.read_sql_query("SELECT exchange, side, score, outcome FROM signals WHERE outcome IN ('WIN','LOSS','BREAKEVEN')", conn)
-    if df.empty:
-        return {"trades": 0, "win_rate": 0.0, "adjustment": 0, "by_side": {}}
-    decided = df[df.outcome.isin(["WIN", "LOSS"])]
-    win_rate = (decided.outcome == "WIN").mean() * 100 if not decided.empty else 0.0
-    by_side = {}
-    for side, group in df.groupby("side"):
-        decided_side = group[group.outcome.isin(["WIN", "LOSS"])]
-        by_side[side] = {"trades": len(group), "win_rate": round((decided_side.outcome == "WIN").mean()*100, 1) if len(decided_side) else 0.0}
-    # Conservative Bayesian adjustment; only activates after 10 resolved trades.
-    adjustment = max(-8, min(8, round((win_rate - 50) * min(len(decided)/30, 1) * 0.16))) if len(decided) >= 10 else 0
-    return {"trades": len(df), "win_rate": round(win_rate, 1), "adjustment": adjustment, "by_side": by_side}
+        rows = conn.execute(
+            "SELECT outcome, COUNT(*), AVG(pnl_pct) FROM signals "
+            "WHERE outcome IN ('WIN','LOSS','BREAKEVEN') GROUP BY outcome"
+        ).fetchall()
+        total = sum(row[1] for row in rows)
+        wins = sum(row[1] for row in rows if row[0] == "WIN")
+        avg_pnl = conn.execute(
+            "SELECT AVG(pnl_pct) FROM signals WHERE outcome IN ('WIN','LOSS','BREAKEVEN')"
+        ).fetchone()[0]
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": sum(row[1] for row in rows if row[0] == "LOSS"),
+        "breakeven": sum(row[1] for row in rows if row[0] == "BREAKEVEN"),
+        "win_rate": (wins / total * 100) if total else 0,
+        "average_pnl": safe_float(avg_pnl),
+    }
 
 
 def save_signals(signals, exchange):
     if not signals:
-        return
-    stamp = datetime.now(timezone.utc).isoformat()
+        return 0
+    saved = 0
     with sqlite3.connect(DB_PATH) as conn:
         for signal in signals:
-            # Prevent duplicate snapshots of the same symbol/side within 20 minutes.
-            exists = conn.execute("SELECT 1 FROM signals WHERE exchange=? AND symbol=? AND side=? AND created_at>=? LIMIT 1",
-                (exchange, signal["symbol"], signal["type"], (datetime.now(timezone.utc)-pd.Timedelta(minutes=20)).isoformat())).fetchone()
+            symbol = str(signal.get("symbol", ""))
+            side = str(signal.get("side", ""))
+            if not symbol or side not in ("LONG", "SHORT"):
+                continue
+            exists = conn.execute(
+                "SELECT id FROM signals WHERE exchange=? AND symbol=? AND side=? "
+                "AND created_at >= datetime('now','-20 minutes')",
+                (exchange, symbol, side),
+            ).fetchone()
             if exists:
                 continue
-            conn.execute("""INSERT INTO signals
-                (created_at, exchange, symbol, side, score, price, entry, stop, tp1, tp2,
-                 change_pct, volume_ratio, cvd_proxy, outcome, tp3, funding_pct, oi_change_pct, market_type)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,'FUTURES')""",
-                (stamp, exchange, signal["symbol"], signal["type"], signal["score"],
-                 signal["price"], signal["entry"], signal["stop"], signal["tp1"], signal["tp2"],
-                 signal["ch"], signal["vol"], signal["buy"], signal.get("tp3"),
-                 signal.get("funding"), signal.get("oi_change")))
+            created = signal.get("created_at", datetime.now(timezone.utc).isoformat())
+            details = json.dumps(signal, ensure_ascii=False, default=str)
+            conn.execute(
+                """INSERT INTO signals
+                (created_at,exchange,symbol,side,score,price,entry,stop,tp1,tp2,
+                 change_pct,volume_ratio,cvd_proxy,tp3,funding_pct,oi_change_pct,
+                 market_type,status,last_price,trade_json,timeframe,leverage)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    created, exchange, symbol, side, int(signal.get("score", 0)),
+                    safe_float(signal.get("price")), safe_float(signal.get("entry")),
+                    safe_float(signal.get("stop")), safe_float(signal.get("tp1")),
+                    safe_float(signal.get("tp2")), safe_float(signal.get("change_pct")),
+                    safe_float(signal.get("volume_ratio")), safe_float(signal.get("cvd")),
+                    safe_float(signal.get("tp3")), safe_float(signal.get("funding_pct")),
+                    safe_float(signal.get("oi_change_pct")), "FUTURES", "ENTRY_PENDING",
+                    safe_float(signal.get("price")), details,
+                    signal.get("timeframe", "15m"), safe_float(signal.get("leverage"), 1),
+                ),
+            )
+            saved += 1
         conn.commit()
+    return saved
 
 
 def load_signal_history(limit=100):
     with sqlite3.connect(DB_PATH) as conn:
         return pd.read_sql_query(
             "SELECT * FROM signals ORDER BY id DESC LIMIT ?",
-            conn,
-            params=(limit,),
+            conn, params=(int(limit),),
         )
 
 
@@ -182,994 +340,1065 @@ def send_telegram(message):
     token = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
     chat_id = st.secrets.get(
         "TELEGRAM_CHANNEL_ID",
-        st.secrets.get("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", "")),
+        os.getenv("TELEGRAM_CHANNEL_ID", os.getenv("TELEGRAM_CHAT_ID", "")),
     )
-    if not token:
-        return False, "أضف TELEGRAM_BOT_TOKEN داخل Streamlit Secrets"
-    if not chat_id:
-        return False, "أضف TELEGRAM_CHANNEL_ID أو TELEGRAM_CHAT_ID داخل Secrets"
+    if not token or not chat_id:
+        return False, "Telegram غير مضبوط"
     try:
         response = SESSION.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "disable_web_page_preview": True},
-            timeout=15,
+            data={"chat_id": chat_id, "text": message},
+            timeout=TIMEOUT,
         )
-        data = response.json()
-        if response.ok and data.get("ok"):
-            return True, "تم الإرسال"
-        return False, data.get("description", f"Telegram HTTP {response.status_code}")
-    except (requests.RequestException, ValueError) as exc:
+        response.raise_for_status()
+        return True, "تم الإرسال"
+    except requests.RequestException as exc:
         return False, str(exc)
 
 
 def format_telegram(signal):
-    side = "🚀 LONG" if signal["type"] == "LONG" else "📉 SHORT"
-    return (
-        f"{side} — {signal['symbol']}\n"
-        f"⭐ Score: {signal['score']}/100\n"
-        f"💵 السعر: {signal['price']}\n"
-        f"🎯 الدخول المقترح: {signal['entry']}\n"
-        f"⛔ وقف الخسارة: {signal['stop']}\n"
-        f"✅ TP1: {signal['tp1']}\n"
-        f"🏆 TP2: {signal['tp2']}\n"
-        f"🎯 TP3: {signal.get('tp3', '—')}\n"
-        f"📈 تغير آخر ساعة: {signal['ch']}%\n"
-        f"📦 حجم التداول: x{signal['vol']}\n"
-        f"📊 CVD proxy: {signal['buy']}%\n"
-        f"{signal['extra']}\n"
-        "@WHYNOTBLY7"
+    return cornix_signal_text(
+        signal,
+        signal.get("exchange", "FUTURES"),
+        signal.get("timeframe", "15m"),
+        signal.get("leverage", 1),
     )
 
 
 def send_signal_batch(signals):
-    sent, errors = 0, []
-    for signal in sorted(signals, key=lambda item: item["score"], reverse=True)[:5]:
-        ok, message = send_telegram(format_telegram(signal))
-        if ok:
-            sent += 1
-        else:
-            errors.append(message)
-        time.sleep(0.4)
-    if sent:
-        st.success(f"📡 تم إرسال {sent} إشارة إلى تليجرام")
-    if errors and not sent:
-        st.error(f"تعذر الإرسال: {errors[-1]}")
+    sent = 0
+    for signal in signals:
+        ok, _ = send_telegram(format_telegram(signal))
+        sent += int(ok)
+    return sent
+    # ----------------------------- Indicators -----------------------------
 
+def add_indicators(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    for col in ("open", "high", "low", "close", "volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close", "volume"])
+    if len(df) < 30:
+        return pd.DataFrame()
 
-# ----------------------------- Market data -----------------------------
-
-def get_kucoin_symbols(limit=100):
-    payload = api_json("https://api.kucoin.com/api/v1/market/allTickers")
-    tickers = (payload or {}).get("data", {}).get("ticker", [])
-    rows = [
-        item for item in tickers
-        if item.get("symbol", "").endswith("-USDT")
-    ]
-    rows.sort(key=lambda item: safe_float(item.get("volValue")), reverse=True)
-    return [item["symbol"] for item in rows[:limit]]
-
-
-def get_kucoin_klines(symbol):
-    end = int(time.time())
-    start = end - 110 * 3600
-    payload = api_json(
-        "https://api.kucoin.com/api/v1/market/candles",
-        {"type": "1hour", "symbol": symbol, "startAt": start, "endAt": end},
-    )
-    data = (payload or {}).get("data", [])
-    if len(data) < 30:
-        return None
-    # KuCoin order: time, open, close, high, low, volume, turnover
-    frame = pd.DataFrame(
-        data, columns=["time", "open", "close", "high", "low", "vol", "turnover"]
-    )
-    for column in ("open", "close", "high", "low", "vol"):
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    return frame.sort_values("time").dropna().reset_index(drop=True)
-
-
-def aggregate_3m(frame):
-    if frame is None or frame.empty: return frame
-    f=frame.copy()
-    f["bucket"]=(pd.to_numeric(f["time"],errors="coerce")//180).astype("Int64")
-    return f.groupby("bucket",dropna=True).agg(time=("time","first"),open=("open","first"),high=("high","max"),low=("low","min"),close=("close","last"),vol=("vol","sum")).reset_index(drop=True)
-
-
-def get_kucoin_futures_symbols(limit=100):
-    payload = api_json("https://api-futures.kucoin.com/api/v1/contracts/active")
-    rows = (payload or {}).get("data", [])
-    rows = [x for x in rows if x.get("quoteCurrency") == "USDT" and x.get("symbol", "").endswith("USDTM") and x.get("isQuanto") is False]
-    rows.sort(key=lambda x: safe_float(x.get("turnoverOf24h")), reverse=True)
-    return [x["symbol"] for x in rows[:limit]]
-
-
-def get_kucoin_futures_klines(symbol, timeframe="1h", limit=500):
-    end = int(time.time())
-    granularity = {"1m":1,"3m":1,"5m":5,"15m":15,"1h":60,"4h":240}.get(timeframe,60)
-    multiplier = 3 if timeframe == "3m" else 1
-    start = end - limit*granularity*60*multiplier
-    payload = api_json("https://api-futures.kucoin.com/api/v1/kline/query",
-                       {"symbol":symbol,"granularity":granularity,"from":start,"to":end})
-    rows = (payload or {}).get("data", [])
-    if len(rows) < 30: return None
-    frame = pd.DataFrame(rows, columns=["time","open","high","low","close","vol","turnover"])
-    for c in ("open","high","low","close","vol"): frame[c] = pd.to_numeric(frame[c], errors="coerce")
-    frame=frame.sort_values("time").dropna().reset_index(drop=True)
-    return aggregate_3m(frame) if timeframe == "3m" else frame
-
-
-def get_binance_futures_symbols(limit=100):
-    payload = api_json("https://fapi.binance.com/fapi/v1/ticker/24hr")
-    if not isinstance(payload, list): return []
-    rows = [x for x in payload if x.get("symbol", "").endswith("USDT") and x.get("symbol") not in STABLES]
-    rows.sort(key=lambda x: safe_float(x.get("quoteVolume")), reverse=True)
-    return [x["symbol"] for x in rows[:limit]]
-
-
-def get_binance_futures_klines(symbol, timeframe="1h", limit=500):
-    payload = api_json("https://fapi.binance.com/fapi/v1/klines", {"symbol": symbol, "interval": timeframe, "limit": min(int(limit),1000)})
-    if not isinstance(payload, list) or len(payload) < 30: return None
-    frame = pd.DataFrame(payload, columns=["ot","open","high","low","close","vol","ct","qav","trades","tb","tq","ignore"])
-    for c in ("open","high","low","close","vol"): frame[c] = pd.to_numeric(frame[c], errors="coerce")
-    return frame.dropna().reset_index(drop=True)
-
-
-def get_bybit_futures_symbols(limit=100):
-    payload = api_json("https://api.bybit.com/v5/market/tickers", {"category":"linear"})
-    rows = (payload or {}).get("result", {}).get("list", [])
-    rows = [x for x in rows if x.get("symbol", "").endswith("USDT")]
-    rows.sort(key=lambda x: safe_float(x.get("turnover24h")), reverse=True)
-    return [x["symbol"] for x in rows[:limit]]
-
-
-def get_bybit_futures_klines(symbol, timeframe="1h", limit=500):
-    payload = api_json("https://api.bybit.com/v5/market/kline", {"category":"linear", "symbol":symbol, "interval":{"1m":"1","3m":"3","5m":"5","15m":"15","1h":"60","4h":"240"}.get(timeframe,"60"), "limit":min(int(limit),1000)})
-    rows = (payload or {}).get("result", {}).get("list", [])
-    if len(rows) < 30: return None
-    frame = pd.DataFrame(rows, columns=["time","open","high","low","close","vol","turnover"])
-    for c in ("open","high","low","close","vol"): frame[c] = pd.to_numeric(frame[c], errors="coerce")
-    return frame.sort_values("time").reset_index(drop=True)
-
-
-def get_mexc_futures_symbols(limit=100):
-    payload = api_json("https://contract.mexc.com/api/v1/contract/ticker")
-    rows = (payload or {}).get("data", [])
-    rows = [x for x in rows if x.get("symbol", "").endswith("_USDT")]
-    rows.sort(key=lambda x: safe_float(x.get("amount24")), reverse=True)
-    return [x["symbol"] for x in rows[:limit]]
-
-
-def get_mexc_futures_klines(symbol, timeframe="1h", limit=500):
-    gran={"1m":"Min1","3m":"Min1","5m":"Min5","15m":"Min15","1h":"Min60","4h":"Hour4"}.get(timeframe,"Min60")
-    seconds={"1m":60,"3m":180,"5m":300,"15m":900,"1h":3600,"4h":14400}.get(timeframe,3600)
-    multiplier=3 if timeframe == "3m" else 1
-    end = int(time.time()); start = end - limit*seconds*multiplier
-    payload = api_json("https://contract.mexc.com/api/v1/contract/kline/" + symbol,
-                       {"interval":gran, "start":start, "end":end})
-    data = (payload or {}).get("data", {})
-    if not isinstance(data, dict) or len(data.get("time", [])) < 30: return None
-    frame = pd.DataFrame({"time":data["time"], "open":data["open"], "high":data["high"], "low":data["low"], "close":data["close"], "vol":data.get("vol", [])})
-    for c in ("open","high","low","close","vol"): frame[c] = pd.to_numeric(frame[c], errors="coerce")
-    frame=frame.sort_values("time").dropna().reset_index(drop=True)
-    return aggregate_3m(frame) if timeframe == "3m" else frame
-
-
-def get_futures_funding_oi(exchange, symbol):
-    try:
-        if exchange == "BINANCE":
-            base = symbol
-            fund = api_json("https://fapi.binance.com/fapi/v1/premiumIndex", {"symbol":base})
-            oi = api_json("https://fapi.binance.com/futures/data/openInterestHist", {"symbol":base,"period":"5m","limit":12})
-            funding = safe_float(fund.get("lastFundingRate"))*100 if isinstance(fund,dict) and "lastFundingRate" in fund else None
-            if isinstance(oi,list) and len(oi)>1:
-                first=safe_float(oi[0].get("sumOpenInterestValue")); last=safe_float(oi[-1].get("sumOpenInterestValue"))
-                change=(last-first)/first*100 if first>0 else None
-            else: change=None
-            return funding, change
-        if exchange == "BYBIT":
-            f=api_json("https://api.bybit.com/v5/market/funding/history", {"category":"linear","symbol":symbol,"limit":2})
-            o=api_json("https://api.bybit.com/v5/market/open-interest", {"category":"linear","symbol":symbol,"intervalTime":"5min","limit":12})
-            fl=(f or {}).get("result",{}).get("list",[]); ol=(o or {}).get("result",{}).get("list",[])
-            funding=safe_float(fl[0].get("fundingRate"))*100 if fl else None
-            first=safe_float(ol[-1].get("openInterest")) if ol else 0; last=safe_float(ol[0].get("openInterest")) if ol else 0
-            return funding, ((last-first)/first*100 if first>0 else None)
-        if exchange == "KUCOIN":
-            payload=api_json("https://api-futures.kucoin.com/api/v1/funding-rate/"+symbol+"/current")
-            data=(payload or {}).get("data",{})
-            return (safe_float(data.get("value"))*100 if data else None), None
-        if exchange == "MEXC":
-            payload=api_json("https://contract.mexc.com/api/v1/contract/funding_rate/"+symbol)
-            data=(payload or {}).get("data",{})
-            return (safe_float(data.get("fundingRate"))*100 if data else None), None
-    except Exception:
-        pass
-    return None, None
-
-
-def get_binance_symbols(limit=100):
-    payload = api_json("https://data-api.binance.vision/api/v3/ticker/24hr")
-    if not isinstance(payload, list):
-        return []
-    rows = [
-        item for item in payload
-        if item.get("symbol", "").endswith("USDT")
-        and item.get("symbol") not in STABLES
-    ]
-    rows.sort(key=lambda item: safe_float(item.get("quoteVolume")), reverse=True)
-    return [item["symbol"] for item in rows[:limit]]
-
-
-def get_binance_klines(symbol):
-    payload = api_json(
-        "https://data-api.binance.vision/api/v3/klines",
-        {"symbol": symbol, "interval": "1h", "limit": 100},
-    )
-    if not isinstance(payload, list) or len(payload) < 30:
-        return None
-    frame = pd.DataFrame(
-        payload,
-        columns=["ot", "open", "high", "low", "close", "vol",
-                 "ct", "qav", "trades", "tb", "tq", "ignore"],
-    )
-    for column in ("open", "high", "low", "close", "vol"):
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    return frame.dropna().reset_index(drop=True)
-
-
-def get_btc_change():
-    payload = api_json(
-        "https://fapi.binance.com/fapi/v1/klines",
-        {"symbol": "BTCUSDT", "interval": "1h", "limit": 2},
-    )
-    if not isinstance(payload, list) or len(payload) < 2:
-        return None
-    previous = safe_float(payload[-2][4])
-    current = safe_float(payload[-1][4])
-    return (current - previous) / previous * 100 if previous else None
-
-
-def get_binance_funding(symbol):
-    base = symbol.replace("-USDT", "").replace("USDT", "")
-    payload = api_json(
-        "https://fapi.binance.com/fapi/v1/premiumIndex",
-        {"symbol": f"{base}USDT"},
-    )
-    if not isinstance(payload, dict) or "lastFundingRate" not in payload:
-        return None
-    return safe_float(payload["lastFundingRate"]) * 100
-
-
-def get_binance_oi_change(symbol):
-    base = symbol.replace("-USDT", "").replace("USDT", "")
-    payload = api_json(
-        "https://fapi.binance.com/futures/data/openInterestHist",
-        {"symbol": f"{base}USDT", "period": "5m", "limit": 12},
-    )
-    if not isinstance(payload, list) or len(payload) < 2:
-        return None, None
-    first = safe_float(payload[0].get("sumOpenInterest"))
-    last = safe_float(payload[-1].get("sumOpenInterest"))
-    if first <= 0:
-        return None, last
-    return (last - first) / first * 100, last
-
-
-def get_orderbook_wall(symbol):
-    base = symbol.replace("-USDT", "").replace("USDT", "")
-    payload = api_json(
-        "https://data-api.binance.vision/api/v3/depth",
-        {"symbol": f"{base}USDT", "limit": 20},
-    )
-    if not isinstance(payload, dict):
-        return "بيانات دفتر الأوامر غير متاحة"
-    bids, asks = payload.get("bids", []), payload.get("asks", [])
-    if not bids or not asks:
-        return "دفتر الأوامر فارغ أو غير متاح"
-    # Compare quote notional at each level, not raw coin quantity.
-    bid_levels = [(safe_float(p) * safe_float(q), safe_float(p)) for p, q in bids]
-    ask_levels = [(safe_float(p) * safe_float(q), safe_float(p)) for p, q in asks]
-    max_bid = max(bid_levels, key=lambda item: item[0])
-    max_ask = max(ask_levels, key=lambda item: item[0])
-    if max_ask[0] > max_bid[0] * 1.5:
-        return f"عرض بيع أكبر نسبيًا: {max_ask[0]:,.0f} USDT عند {max_ask[1]}"
-    if max_bid[0] > max_ask[0] * 1.5:
-        return f"طلب شراء أكبر نسبيًا: {max_bid[0]:,.0f} USDT عند {max_bid[1]}"
-    return f"لا يوجد جدار بارز؛ شراء {max_bid[0]:,.0f} / بيع {max_ask[0]:,.0f} USDT"
-
-
-def check_spot_listings(symbol):
-    """Spot availability check kept separate from the Futures scanner universe."""
-    base = symbol.replace("_USDT", "").replace("-USDT", "").replace("USDTM", "").replace("USDT", "")
-    if base == "XBT": base = "BTC"
-    checks = [
-        ("KUCOIN", f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={base}-USDT"),
-        ("GATE", f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={base}_USDT"),
-        ("BITGET", f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={base}USDT"),
-        ("BYBIT", f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={base}USDT"),
-        ("BINANCE", f"https://data-api.binance.vision/api/v3/ticker/price?symbol={base}USDT"),
-    ]
-    available = []
-    for name, url in checks:
-        try:
-            response = SESSION.get(url, timeout=4)
-            if not response.ok: continue
-            data = response.json()
-            if name == "KUCOIN": valid = data.get("code") == "200000" and bool(data.get("data"))
-            elif name == "GATE": valid = isinstance(data, list) and len(data) > 0
-            elif name == "BITGET": valid = data.get("code") == "00000" and bool(data.get("data", {}).get("list"))
-            elif name == "BYBIT": valid = data.get("retCode") == 0 and bool(data.get("result", {}).get("list"))
-            else: valid = isinstance(data, dict) and "price" in data
-            if valid: available.append(name)
-        except (requests.RequestException, ValueError, TypeError):
-            continue
-    return len(available), available
-
-
-# ----------------------------- Indicators -----------------------------
-
-def add_indicators(frame):
-    """Return a copy of OHLCV data with the indicators required by analyze()."""
-    if frame is None or frame.empty:
-        return frame
-    out = frame.copy()
-    for column in ("open", "high", "low", "close", "vol"):
-        if column not in out.columns:
-            raise ValueError(f"عمود بيانات مفقود: {column}")
-        out[column] = pd.to_numeric(out[column], errors="coerce")
-
-    close = out["close"]
-    high = out["high"]
-    low = out["low"]
-    out["ema9"] = close.ewm(span=9, adjust=False, min_periods=1).mean()
-    out["ema21"] = close.ewm(span=21, adjust=False, min_periods=1).mean()
-    out["ema200"] = close.ewm(span=200, adjust=False, min_periods=1).mean()
-
+    close = df["close"]
     delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
     rs = gain / loss.replace(0, float("nan"))
-    out["rsi"] = 100 - (100 / (1 + rs))
-    out.loc[(loss == 0) & (gain > 0), "rsi"] = 100
-    out.loc[(gain == 0) & (loss > 0), "rsi"] = 0
-    out["rsi"] = out["rsi"].fillna(50)
+    df["rsi"] = (100 - 100 / (1 + rs)).fillna(50)
 
-    ema12 = close.ewm(span=12, adjust=False, min_periods=1).mean()
-    ema26 = close.ewm(span=26, adjust=False, min_periods=1).mean()
-    out["macd"] = ema12 - ema26
-    out["macd_signal"] = out["macd"].ewm(span=9, adjust=False, min_periods=1).mean()
+    df["ema9"] = close.ewm(span=9, adjust=False).mean()
+    df["ema21"] = close.ewm(span=21, adjust=False).mean()
+    df["ema200"] = close.ewm(span=200, adjust=False).mean()
+
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    df["macd"] = ema12 - ema26
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
 
     previous_close = close.shift(1)
-    true_range = pd.concat([
-        high - low, (high - previous_close).abs(), (low - previous_close).abs()
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - previous_close).abs(),
+        (df["low"] - previous_close).abs(),
     ], axis=1).max(axis=1)
-    out["atr"] = true_range.ewm(alpha=1/14, adjust=False, min_periods=1).mean()
-    out["momentum"] = close.pct_change(5).replace([float("inf"), -float("inf")], 0).fillna(0) * 100
-    return out.replace([float("inf"), -float("inf")], pd.NA).ffill().fillna(0)
+    df["atr"] = tr.ewm(alpha=1/14, adjust=False).mean()
+    df["momentum"] = close.pct_change(10) * 100
+
+    df["volume_avg"] = df["volume"].rolling(20).mean()
+    df["volume_ratio"] = (
+        df["volume"] / df["volume_avg"].replace(0, float("nan"))
+    ).replace([float("inf"), -float("inf")], 0).fillna(0)
+
+    signed_volume = df["volume"] * (
+        (df["close"] - df["open"]) /
+        (df["high"] - df["low"]).replace(0, float("nan"))
+    )
+    df["cvd_proxy"] = signed_volume.fillna(0).cumsum()
+    return df
 
 
-def market_structure(frame, lookback=20):
-    """Candle-derived liquidity/swing and order-block estimates (heuristics)."""
-    recent = frame.tail(max(lookback, 5)).copy()
-    last = recent.iloc[-1]
+def market_structure(df):
+    if df is None or len(df) < 25:
+        return {"bsl": None, "ssl": None, "fvg": False, "ob": False,
+                "sweep_high": False, "sweep_low": False}
+    recent = df.tail(25)
     prior = recent.iloc[:-1]
-    bsl = safe_float(prior["high"].max(), safe_float(last["high"])) if not prior.empty else safe_float(last["high"])
-    ssl = safe_float(prior["low"].min(), safe_float(last["low"])) if not prior.empty else safe_float(last["low"])
-    high_now, low_now, close_now = safe_float(last["high"]), safe_float(last["low"]), safe_float(last["close"])
-    bsl_sweep = high_now > bsl and close_now < bsl
-    ssl_sweep = low_now < ssl and close_now > ssl
+    last = recent.iloc[-1]
+    bsl = safe_float(prior["high"].max())
+    ssl = safe_float(prior["low"].min())
+    sweep_high = last["high"] > bsl and last["close"] < bsl
+    sweep_low = last["low"] < ssl and last["close"] > ssl
 
-    bull_ob = bear_ob = None
-    rows = frame.tail(12).reset_index(drop=True)
-    for i in range(len(rows) - 1, 0, -1):
-        candle = rows.iloc[i - 1]
-        nxt = rows.iloc[i]
-        o, c = safe_float(candle["open"]), safe_float(candle["close"])
-        no, nc = safe_float(nxt["open"]), safe_float(nxt["close"])
-        if c < o and nc > no and nc > safe_float(candle["high"]):
-            bull_ob = (safe_float(candle["low"]), safe_float(candle["high"]))
-            break
-    for i in range(len(rows) - 1, 0, -1):
-        candle = rows.iloc[i - 1]
-        nxt = rows.iloc[i]
-        o, c = safe_float(candle["open"]), safe_float(candle["close"])
-        no, nc = safe_float(nxt["open"]), safe_float(nxt["close"])
-        if c > o and nc < no and nc < safe_float(candle["low"]):
-            bear_ob = (safe_float(candle["low"]), safe_float(candle["high"]))
-            break
-    return {"bsl": bsl, "ssl": ssl, "bsl_sweep": bsl_sweep,
-            "ssl_sweep": ssl_sweep, "bull_ob": bull_ob, "bear_ob": bear_ob}
+    fvg_bull = False
+    fvg_bear = False
+    if len(df) >= 3:
+        a, c = df.iloc[-3], df.iloc[-1]
+        fvg_bull = c["low"] > a["high"]
+        fvg_bear = c["high"] < a["low"]
+
+    last_body = abs(last["close"] - last["open"])
+    avg_body = (df["close"] - df["open"]).abs().tail(20).mean()
+    ob = bool(last_body > safe_float(avg_body) * 1.5)
+
+    return {
+        "bsl": bsl, "ssl": ssl,
+        "fvg": bool(fvg_bull or fvg_bear),
+        "fvg_bull": bool(fvg_bull),
+        "fvg_bear": bool(fvg_bear),
+        "ob": ob,
+        "sweep_high": bool(sweep_high),
+        "sweep_low": bool(sweep_low),
+    }
 
 
-def get_real_cvd(exchange, symbol, limit=1000):
-    """Trade-level CVD where public recent-trade endpoints are available."""
+# ----------------------------- Futures APIs -----------------------------
+
+def binance_futures_symbols(limit=100):
+    data = api_json("https://fapi.binance.com/fapi/v1/ticker/24hr")
+    if not isinstance(data, list):
+        return []
+    rows = []
+    for item in data:
+        symbol = item.get("symbol", "")
+        if not symbol.endswith("USDT") or symbol in STABLES:
+            continue
+        if safe_float(item.get("quoteVolume")) < 2_000_000:
+            continue
+        rows.append((symbol, safe_float(item.get("quoteVolume"))))
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in rows[:limit]]
+
+
+def binance_futures_klines(symbol, interval="5m", limit=300):
+    data = api_json(
+        "https://fapi.binance.com/fapi/v1/klines",
+        {"symbol": symbol, "interval": interval, "limit": min(limit, 1000)},
+    )
+    if not isinstance(data, list) or not data:
+        return pd.DataFrame()
+    cols = ["time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades", "taker_buy",
+            "taker_quote", "ignore"]
+    df = pd.DataFrame(data, columns=cols)
+    df["time"] = pd.to_datetime(df["time"], unit="ms", utc=True)
+    return df[["time", "open", "high", "low", "close", "volume"]]
+
+
+def bybit_futures_symbols(limit=100):
+    data = api_json(
+        "https://api.bybit.com/v5/market/tickers",
+        {"category": "linear"},
+    )
+    rows = (data or {}).get("result", {}).get("list", [])
+    ranked = []
+    for item in rows:
+        symbol = item.get("symbol", "")
+        if symbol.endswith("USDT") and safe_float(item.get("turnover24h")) >= 2_000_000:
+            ranked.append((symbol, safe_float(item.get("turnover24h"))))
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in ranked[:limit]]
+
+
+def bybit_futures_klines(symbol, interval="5", limit=300):
+    interval_map = {"1m": "1", "3m": "3", "5m": "5",
+                    "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+    data = api_json(
+        "https://api.bybit.com/v5/market/kline",
+        {"category": "linear", "symbol": symbol,
+         "interval": interval_map.get(interval, interval),
+         "limit": min(limit, 1000)},
+    )
+    rows = (data or {}).get("result", {}).get("list", [])
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=[
+        "time", "open", "high", "low", "close", "volume", "turnover"
+    ])
+    df["time"] = pd.to_datetime(pd.to_numeric(df["time"]), unit="ms", utc=True)
+    return df[["time", "open", "high", "low", "close", "volume"]].sort_values("time")
+
+
+def kucoin_futures_symbols(limit=100):
+    data = api_json("https://api-futures.kucoin.com/api/v1/contracts/active")
+    rows = (data or {}).get("data", [])
+    ranked = []
+    for item in rows:
+        symbol = item.get("symbol", "")
+        if "USDTM" in symbol:
+            ranked.append((symbol, safe_float(item.get("volumeOf24h"))))
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in ranked[:limit]]
+
+
+def kucoin_futures_klines(symbol, interval="5m", limit=300):
+    granularity = {"1m": 1, "3m": 3, "5m": 5,
+                   "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+    minutes = granularity.get(interval, 5)
+    end = int(time.time())
+    start = end - minutes * 60 * min(limit, 500)
+    data = api_json(
+        "https://api-futures.kucoin.com/api/v1/kline/query",
+        {"symbol": symbol, "granularity": minutes,
+         "from": start, "to": end},
+    )
+    rows = (data or {}).get("data", [])
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=[
+        "time", "open", "high", "low", "close", "volume", "turnover"
+    ])
+    df["time"] = pd.to_datetime(pd.to_numeric(df["time"]), unit="s", utc=True)
+    return df[["time", "open", "high", "low", "close", "volume"]].sort_values("time").tail(limit)
+
+
+def mexc_futures_symbols(limit=100):
+    data = api_json("https://contract.mexc.com/api/v1/contract/ticker")
+    rows = (data or {}).get("data", [])
+    ranked = []
+    for item in rows:
+        symbol = item.get("symbol", "")
+        if symbol.endswith("_USDT"):
+            ranked.append((symbol, safe_float(item.get("amount24"))))
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in ranked[:limit]]
+
+
+def mexc_futures_klines(symbol, interval="Min5", limit=300):
+    interval_map = {
+        "1m": "Min1", "3m": "Min3", "5m": "Min5",
+        "15m": "Min15", "1h": "Min60", "4h": "Hour4", "1d": "Day1"
+    }
+    end = int(time.time())
+    seconds = {"1m": 60, "3m": 180, "5m": 300,
+               "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+    start = end - seconds.get(interval, 300) * min(limit, 1500)
+    data = api_json(
+        "https://contract.mexc.com/api/v1/contract/kline/" + symbol,
+        {"interval": interval_map.get(interval, interval),
+         "start": start, "end": end},
+    )
+    payload = (data or {}).get("data", {})
+    if not isinstance(payload, dict) or not payload.get("time"):
+        return pd.DataFrame()
+    df = pd.DataFrame({
+        "time": payload["time"], "open": payload["open"],
+        "high": payload["high"], "low": payload["low"],
+        "close": payload["close"], "volume": payload["vol"],
+    })
+    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    return df.tail(limit)
+
+
+def fetch_futures_symbols(exchange, limit=100):
+    funcs = {
+        "BINANCE": binance_futures_symbols,
+        "BYBIT": bybit_futures_symbols,
+        "KUCOIN": kucoin_futures_symbols,
+        "MEXC": mexc_futures_symbols,
+    }
+    try:
+        return funcs[exchange](limit)
+    except Exception:
+        return []
+
+
+def fetch_futures_klines(exchange, symbol, timeframe="5m", limit=300):
+    funcs = {
+        "BINANCE": binance_futures_klines,
+        "BYBIT": bybit_futures_klines,
+        "KUCOIN": kucoin_futures_klines,
+        "MEXC": mexc_futures_klines,
+    }
+    try:
+        return funcs[exchange](symbol, timeframe, limit)
+    except Exception:
+        return pd.DataFrame()
+
+
+def fetch_funding(exchange, symbol):
     try:
         if exchange == "BINANCE":
-            data = api_json("https://fapi.binance.com/fapi/v1/aggTrades",
-                            {"symbol": symbol, "limit": min(limit, 1000)})
-            if not isinstance(data, list) or not data:
-                return None
-            buy = sell = 0.0
-            for trade in data:
-                qty = safe_float(trade.get("q"))
-                if trade.get("m") is True: sell += qty
-                else: buy += qty
-            total = buy + sell
-            return (buy - sell) / total * 100 if total else None
+            d = api_json("https://fapi.binance.com/fapi/v1/premiumIndex", {"symbol": symbol})
+            return safe_float((d or {}).get("lastFundingRate")) * 100
         if exchange == "BYBIT":
-            payload = api_json("https://api.bybit.com/v5/market/recent-trade",
-                               {"category": "linear", "symbol": symbol, "limit": min(limit, 1000)})
-            trades = (payload or {}).get("result", {}).get("list", [])
-            if not trades: return None
-            buy = sum(safe_float(x.get("size")) for x in trades if x.get("side") == "Buy")
-            sell = sum(safe_float(x.get("size")) for x in trades if x.get("side") == "Sell")
-            total = buy + sell
-            return (buy - sell) / total * 100 if total else None
+            d = api_json("https://api.bybit.com/v5/market/funding/history",
+                         {"category": "linear", "symbol": symbol, "limit": 1})
+            rows = (d or {}).get("result", {}).get("list", [])
+            return safe_float(rows[0].get("fundingRate")) * 100 if rows else None
+        if exchange == "KUCOIN":
+            d = api_json("https://api-futures.kucoin.com/api/v1/funding-rate/" + symbol + "/current")
+            return safe_float((d or {}).get("data", {}).get("value")) * 100
+        if exchange == "MEXC":
+            d = api_json("https://contract.mexc.com/api/v1/contract/funding_rate/" + symbol)
+            return safe_float((d or {}).get("data", {}).get("fundingRate")) * 100
     except Exception:
-        return None
+        pass
     return None
 
 
-def get_futures_orderbook(exchange, symbol, depth=20):
-    """Top-of-book bid/ask size imbalance for supported futures venues."""
+def fetch_open_interest_change(exchange, symbol):
     try:
         if exchange == "BINANCE":
-            payload = api_json("https://fapi.binance.com/fapi/v1/depth",
-                               {"symbol": symbol, "limit": min(depth, 100)})
-            bids, asks = (payload or {}).get("bids", []), (payload or {}).get("asks", [])
-        elif exchange == "BYBIT":
-            payload = api_json("https://api.bybit.com/v5/market/orderbook",
-                               {"category": "linear", "symbol": symbol, "limit": min(depth, 50)})
-            book = (payload or {}).get("result", {})
-            bids, asks = book.get("b", []), book.get("a", [])
-        elif exchange == "KUCOIN":
-            payload = api_json("https://api-futures.kucoin.com/api/v1/level2/snapshot", {"symbol": symbol})
-            book = (payload or {}).get("data", {})
-            bids, asks = book.get("bids", []), book.get("asks", [])
-        elif exchange == "MEXC":
-            payload = api_json("https://contract.mexc.com/api/v1/contract/depth/" + symbol, {"limit": depth})
-            book = (payload or {}).get("data", {})
-            bids, asks = book.get("bids", []), book.get("asks", [])
-        else:
-            return None, "منصة دفتر الأوامر غير مدعومة"
-
-        def total_size(levels):
-            total = 0.0
-            for level in levels[:depth]:
-                if isinstance(level, dict):
-                    qty = level.get("size", level.get("qty", level.get("v", 0)))
-                else:
-                    qty = level[1] if len(level) > 1 else 0
-                total += safe_float(qty)
-            return total
-
-        bid_size, ask_size = total_size(bids), total_size(asks)
-        total = bid_size + ask_size
-        if total <= 0:
-            return None, "بيانات دفتر الأوامر غير متاحة"
-        imbalance = (bid_size - ask_size) / total * 100
-        return imbalance, f"اختلال دفتر الأوامر {exchange}: {imbalance:+.1f}% (أفضل {depth} مستويات متاحة)"
-    except Exception as exc:
-        return None, f"تعذر قراءة دفتر الأوامر: {exc}"
+            d = api_json("https://fapi.binance.com/futures/data/openInterestHist",
+                         {"symbol": symbol, "period": "5m", "limit": 2})
+            if isinstance(d, list) and len(d) >= 2:
+                old = safe_float(d[0].get("sumOpenInterestValue"))
+                new = safe_float(d[-1].get("sumOpenInterestValue"))
+                return (new / old - 1) * 100 if old else None
+        if exchange == "BYBIT":
+            d = api_json("https://api.bybit.com/v5/market/open-interest",
+                         {"category": "linear", "symbol": symbol, "intervalTime": "5min", "limit": 2})
+            rows = (d or {}).get("result", {}).get("list", [])
+            if len(rows) >= 2:
+                old = safe_float(rows[-1].get("openInterest"))
+                new = safe_float(rows[0].get("openInterest"))
+                return (new / old - 1) * 100 if old else None
+    except Exception:
+        pass
+    return None
 
 
-def candle_volume_delta_proxy(frame, lookback=20):
-    """Green/red candle volume approximation; not exchange trade-level CVD."""
-    recent = frame.tail(lookback)
-    green = recent.loc[recent["close"] > recent["open"], "vol"].sum()
-    red = recent.loc[recent["close"] < recent["open"], "vol"].sum()
-    total = green + red
-    return ((green - red) / total * 100) if total else 0.0
-
-
-def find_recent_fvg(frame, lookback=30):
-    bull = bear = None
-    start = max(1, len(frame) - lookback)
-    for index in range(start, len(frame) - 1):
-        previous_high = safe_float(frame["high"].iloc[index - 1])
-        previous_low = safe_float(frame["low"].iloc[index - 1])
-        next_low = safe_float(frame["low"].iloc[index + 1])
-        next_high = safe_float(frame["high"].iloc[index + 1])
-        if next_low > previous_high:
-            bull = (previous_high, next_low, (previous_high + next_low) / 2)
-        if next_high < previous_low:
-            bear = (next_high, previous_low, (next_high + previous_low) / 2)
-    return bull, bear
-
-
-def candle_trap_note(frame, side, cvd_proxy):
-    candle = frame.iloc[-1]
-    high, low = safe_float(candle["high"]), safe_float(candle["low"])
-    open_price, close = safe_float(candle["open"]), safe_float(candle["close"])
-    body = abs(close - open_price)
-    upper_wick = high - max(open_price, close)
-    lower_wick = min(open_price, close) - low
-    if side == "SHORT" and body > 0 and upper_wick > body * 1.5:
-        return "ذيل علوي طويل؛ احتمال رفض سعري، وليس إثباتًا لضرب ستوبات"
-    if side == "LONG" and body > 0 and lower_wick > body * 1.5:
-        return "ذيل سفلي طويل؛ احتمال رفض سعري، وليس إثباتًا لتجميع الحيتان"
-    return f"ضغط الشموع التقريبي: {cvd_proxy:+.1f}%"
-
-
-def analyze(frame, symbol, settings, exchange="BINANCE"):
+def fetch_orderbook_imbalance(exchange, symbol):
     try:
-        if frame is None or len(frame) < 30:
-            return None, "بيانات شموع غير كافية"
-
-        last = safe_float(frame["close"].iloc[-1])
-        previous = safe_float(frame["close"].iloc[-2])
-        if last <= 0 or previous <= 0:
-            return None, "سعر غير صالح"
-
-        frame = add_indicators(frame)
-        change = (last - previous) / previous * 100
-        if abs(change) > 8:
-            return None, f"حركة الشمعة الأخيرة ({settings.get('timeframe','1h')}): {change:.2f}%"
-
-        average_volume = safe_float(frame["vol"].iloc[-21:-1].mean())
-        current_volume = safe_float(frame["vol"].iloc[-1])
-        volume_ratio = current_volume / average_volume if average_volume > 0 else 0
-
-        cvd_proxy = candle_volume_delta_proxy(frame)
-        real_cvd = get_real_cvd(exchange, symbol)
-        cvd_value = real_cvd if real_cvd is not None else cvd_proxy
-        if abs(cvd_value) < 3:
-            return None, f"ضغط الشموع ضعيف: {cvd_proxy:.1f}%"
-
-        side = "LONG" if cvd_value > 0 else "SHORT"
-        if side == "LONG" and not settings["want_long"]:
-            return None, "LONG غير مفعّل"
-        if side == "SHORT" and not settings["want_short"]:
-            return None, "SHORT غير مفعّل"
-        mtf_note = "MTF غير مفعل"
-        if settings.get("mtf_filter"):
-            higher_tf = "1h" if settings.get("timeframe") != "1h" else "4h"
-            source = {"KUCOIN":get_kucoin_futures_klines,"BINANCE":get_binance_futures_klines,
-                      "BYBIT":get_bybit_futures_klines,"MEXC":get_mexc_futures_klines}[exchange]
-            higher = source(symbol, higher_tf, 120)
-            if higher is None or len(higher) < 30: return None, "بيانات MTF غير متاحة"
-            higher = add_indicators(higher)
-            aligned = safe_float(higher["ema9"].iloc[-1]) > safe_float(higher["ema21"].iloc[-1]) if side == "LONG" else safe_float(higher["ema9"].iloc[-1]) < safe_float(higher["ema21"].iloc[-1])
-            if not aligned: return None, f"اتجاه {higher_tf} غير مؤكد مع {side}"
-            mtf_note = f"MTF مؤكد على {higher_tf}"
-
-        btc_change = get_btc_change() if settings["btc_filter"] else None
-        if settings["btc_filter"] and btc_change is not None:
-            if side == "LONG" and btc_change < -2:
-                return None, f"فلتر BTC: هبوط {btc_change:.2f}%"
-            if side == "SHORT" and btc_change > 2:
-                return None, f"فلتر BTC: صعود {btc_change:.2f}%"
-
-        bull_fvg, bear_fvg = find_recent_fvg(frame)
-        if settings["use_fvg"] and not (bull_fvg or bear_fvg):
-            return None, "لا توجد فجوة FVG حديثة"
-
-        in_kz, kz_label = killzone_status()
-        funding, oi_change = get_futures_funding_oi(exchange, symbol)
-        if settings["funding_filter"] and funding is not None:
-            if side == "LONG" and funding > 0.05:
-                return None, f"فاندنج مرتفع ضد LONG: {funding:.4f}%"
-            if side == "SHORT" and funding < -0.05:
-                return None, f"فاندنج سالب ضد SHORT: {funding:.4f}%"
-
-        structure = market_structure(frame)
-        ema_bull = safe_float(frame["ema9"].iloc[-1]) > safe_float(frame["ema21"].iloc[-1])
-        ema_bear = safe_float(frame["ema9"].iloc[-1]) < safe_float(frame["ema21"].iloc[-1])
-        macd_bull = safe_float(frame["macd"].iloc[-1]) > safe_float(frame["macd_signal"].iloc[-1])
-        macd_bear = safe_float(frame["macd"].iloc[-1]) < safe_float(frame["macd_signal"].iloc[-1])
-        rsi = safe_float(frame["rsi"].iloc[-1], 50)
-        atr = safe_float(frame["atr"].iloc[-1])
-        momentum = safe_float(frame["momentum"].iloc[-1])
-        book_imbalance, book_note = get_futures_orderbook(exchange, symbol) if settings["wall_filter"] else (None, "")
-        score = 38
-        score += min(max(volume_ratio, 0) * 3, 15)
-        score += min(abs(cvd_value) * 0.20, 18)
-        score += 7 if ((side == "LONG" and ema_bull and macd_bull) or (side == "SHORT" and ema_bear and macd_bear)) else 0
-        score += 4 if ((side == "LONG" and 45 <= rsi <= 68) or (side == "SHORT" and 32 <= rsi <= 55)) else 0
-        score += 3 if ((side == "LONG" and momentum > 0) or (side == "SHORT" and momentum < 0)) else 0
-        if book_imbalance is not None and ((side == "LONG" and book_imbalance > 8) or (side == "SHORT" and book_imbalance < -8)):
-            score += 5
-        score += 8 if ((side == "LONG" and bull_fvg) or (side == "SHORT" and bear_fvg)) else 0
-        score += 5 if in_kz else 0
-        learning = learning_profile()
-        score = max(0, min(int(score) + learning["adjustment"], 98))
-
-        if score < settings["min_score"]:
-            return None, f"السكور {score} أقل من المطلوب {settings['min_score']}"
-
-        if side == "LONG":
-            fvg_mid = bull_fvg[2] if bull_fvg else last * 0.997
-            entry = clamp_entry(fvg_mid, last, True)
-            risk = max(atr * 1.5, last * 0.006)
-            stop = last - risk
-            tp1, tp2 = last + risk * 1.5, last + risk * 2.5
+        if exchange == "BINANCE":
+            d = api_json("https://fapi.binance.com/fapi/v1/depth",
+                         {"symbol": symbol, "limit": 20})
+            bids, asks = (d or {}).get("bids", []), (d or {}).get("asks", [])
+        elif exchange == "BYBIT":
+            d = api_json("https://api.bybit.com/v5/market/orderbook",
+                         {"category": "linear", "symbol": symbol, "limit": 25})
+            book = (d or {}).get("result", {})
+            bids, asks = book.get("b", []), book.get("a", [])
         else:
-            fvg_mid = bear_fvg[2] if bear_fvg else last * 1.003
-            entry = clamp_entry(fvg_mid, last, False)
-            risk = max(atr * 1.5, last * 0.006)
-            stop = last + risk
-            tp1, tp2 = last - risk * 1.5, last - risk * 2.5
-
-        notes = [
-            f"📊 CVD: {cvd_value:+.1f}% ({'تدفق صفقات حقيقي' if real_cvd is not None else 'Proxy من اتجاه الشموع؛ ليس CVD حقيقيًا'})",
-            f"📦 حجم آخر شمعة: x{volume_ratio:.2f} من متوسط 20 شمعة",
-            f"⏰ {kz_label}" if settings["killzone"] else "⏰ فلتر الوقت متوقف",
-            f"🐋 {candle_trap_note(frame, side, cvd_proxy)}",
-        ]
-        notes.append(f"🧭 {mtf_note}")
-        notes.append(f"📐 EMA9/21: {'صاعد' if ema_bull else 'هابط'} | RSI14: {rsi:.1f} | MACD: {'إيجابي' if macd_bull else 'سلبي'}")
-        notes.append(f"⚡ ATR14: {atr:.8g} | Momentum(5): {momentum:+.2f}%")
-        notes.append(f"💧 BSL: {structure['bsl']:.8g} | SSL: {structure['ssl']:.8g} | Sweep: {'BSL' if structure['bsl_sweep'] else ('SSL' if structure['ssl_sweep'] else 'لا يوجد تأكيد')}")
-        ob = structure['bull_ob'] if side == 'LONG' else structure['bear_ob']
-        notes.append(f"🧱 Order Block heuristic: {ob[0]:.8g}–{ob[1]:.8g}" if ob else "🧱 لا يوجد OB واضح وفق شرط الشموع")
-        if book_imbalance is not None: notes.append(f"📚 {book_note}")
-        notes.append("🧨 Liquidations: لا تتوفر بيانات موحدة موثوقة عبر جميع المنصات في هذا الفحص؛ لم يتم اختلاق خريطة تصفيات.")
-        relevant_fvg = bull_fvg if side == "LONG" else bear_fvg
-        if relevant_fvg:
-            notes.append(
-                f"FVG: {relevant_fvg[0]:.8g} إلى {relevant_fvg[1]:.8g}؛ المنتصف {relevant_fvg[2]:.8g}"
-            )
-        if settings["funding_filter"]:
-            notes.append(
-                f"💸 Funding {exchange} Futures: {funding:+.4f}%"
-                if funding is not None else "💸 Funding: غير متاح لهذا الرمز"
-            )
-
-        if oi_change is not None:
-            notes.append(f"📈 OI {exchange} Futures: {oi_change:+.2f}%")
-        else:
-            notes.append(f"📈 OI {exchange}: غير متاح من الواجهة العامة")
-
-        if settings["wall_filter"] and book_imbalance is None:
-            notes.append("📚 دفتر الأوامر: لم تتوفر بيانات صالحة لهذا الرمز")
-
-        if settings["confirm_exchanges"]:
-            count, exchanges = check_spot_listings(symbol)
-            notes.append(
-                f"🌐 الرمز متاح Spot على {count}/5 بحسب فحص endpoints: {', '.join(exchanges)}"
-            )
-            if count >= 3:
-                score = min(score + 3, 98)
-
-        stop_distance = abs(entry-stop)
-        risk_cash = settings.get("capital_usdt",100.0) * settings.get("risk_pct",1.0) / 100
-        estimated_cost_pct = settings.get("fee_pct",0.10) + settings.get("slippage_pct",0.05)
-        effective_risk_per_unit = stop_distance + entry * estimated_cost_pct / 100
-        position_qty = risk_cash / effective_risk_per_unit if effective_risk_per_unit > 0 else 0
-        position_notional = position_qty * entry
-        risk_pct = abs(stop - last) / last * 100
-        notes.append(f"🎯 مسافة وقف الخسارة: {risk_pct:.2f}% من السعر | R:R TP1 {abs(tp1-entry)/max(stop_distance,1e-12):.2f}")
-        notes.append(f"📏 حجم المركز النظري: {position_qty:.6g} وحدة | القيمة {position_notional:.2f} USDT | مخاطرة {risk_cash:.2f} USDT")
-        notes.append(f"🧾 تكلفة تقديرية رسوم+انزلاق: {estimated_cost_pct:.2f}%")
-        notes.append("⚠️ مستويات إرشادية مبنية على السعر الحالي؛ يلزم إعادة حسابها عند التنفيذ.")
-
-        result = {
-            "symbol": symbol,
-            "type": side,
-            "score": score,
-            "price": round(last, 8),
-            "ch": round(change, 2),
-            "vol": round(volume_ratio, 2),
-            "buy": round(cvd_proxy, 1),
-            "entry": round(entry, 8),
-            "stop": round(stop, 8),
-            "tp1": round(tp1, 8),
-            "tp2": round(tp2, 8),
-            "tp3": round((last + risk * 3.5) if side == "LONG" else (last - risk * 3.5), 8),
-            "funding": funding, "oi_change": oi_change, "real_cvd": real_cvd,
-            "rr_tp1": round(abs(tp1-entry)/max(abs(entry-stop), 1e-12), 2),
-            "position_qty": round(position_qty, 8), "position_notional": round(position_notional, 2),
-            "extra": "\n".join(notes),
-        }
-        return result, "OK"
-    except Exception as exc:
-        return None, f"خطأ تحليل: {exc}"
+            return None
+        bid_qty = sum(safe_float(x[1]) for x in bids)
+        ask_qty = sum(safe_float(x[1]) for x in asks)
+        total = bid_qty + ask_qty
+        return ((bid_qty - ask_qty) / total * 100) if total else None
+    except Exception:
+        return None
 
 
-# ----------------------------- DEX scanner -----------------------------
+def build_trade_signal(exchange, symbol, timeframe="5m", limit=300):
+    raw = fetch_futures_klines(exchange, symbol, timeframe, limit)
+    df = add_indicators(raw)
+    if df.empty or len(df) < 30:
+        return None
 
-def scan_dex():
-    payload = api_json("https://api.dexscreener.com/latest/dex/search/", {"q": "BSC"})
-    pairs = (payload or {}).get("pairs", [])
-    found, seen = [], set()
-    for pair in pairs:
-        if pair.get("chainId") != "bsc":
-            continue
-        token = pair.get("baseToken") or {}
-        address = token.get("address")
-        if not address or address in seen:
-            continue
-        seen.add(address)
-        price = safe_float(pair.get("priceUsd"))
-        liquidity = safe_float((pair.get("liquidity") or {}).get("usd"))
-        volume_5m = safe_float((pair.get("volume") or {}).get("m5"))
-        change_5m = safe_float((pair.get("priceChange") or {}).get("m5"))
-        if price > 0 and volume_5m >= 5000 and change_5m >= 5 and liquidity >= 15000:
-            found.append({
-                "symbol": token.get("symbol", "UNKNOWN"),
-                "price": price,
-                "change_5m": change_5m,
-                "volume_5m": volume_5m,
-                "liquidity": liquidity,
-                "url": pair.get("url", ""),
-            })
-    return sorted(found, key=lambda item: item["volume_5m"], reverse=True)
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    price = safe_float(last["close"])
+    atr = safe_float(last["atr"])
+    if price <= 0 or atr <= 0:
+        return None
 
+    structure = market_structure(df)
+    funding = fetch_funding(exchange, symbol)
+    oi_change = fetch_open_interest_change(exchange, symbol)
+    imbalance = fetch_orderbook_imbalance(exchange, symbol)
 
-# ----------------------------- Sidebar -----------------------------
+    long_score = 0
+    short_score = 0
+    reasons_long, reasons_short = [], []
 
-init_db()
+    if last["ema9"] > last["ema21"]:
+        long_score += 2
+        reasons_long.append("EMA9 أعلى EMA21")
+    if last["ema9"] < last["ema21"]:
+        short_score += 2
+        reasons_short.append("EMA9 أسفل EMA21")
+    if last["close"] > last["ema200"]:
+        long_score += 1
+        reasons_long.append("السعر أعلى EMA200")
+    if last["close"] < last["ema200"]:
+        short_score += 1
+        reasons_short.append("السعر أسفل EMA200")
+    if last["rsi"] >= 55 and last["rsi"] < 75:
+        long_score += 1
+        reasons_long.append("RSI يدعم الصعود")
+    if last["rsi"] <= 45 and last["rsi"] > 25:
+        short_score += 1
+        reasons_short.append("RSI يدعم الهبوط")
+    if last["macd_hist"] > 0:
+        long_score += 1
+        reasons_long.append("MACD إيجابي")
+    if last["macd_hist"] < 0:
+        short_score += 1
+        reasons_short.append("MACD سلبي")
+    if last["volume_ratio"] >= 1.5:
+        long_score += 1
+        short_score += 1
+    if structure["sweep_low"]:
+        long_score += 2
+        reasons_long.append("سحب سيولة أسفل القاع ثم إغلاق أعلى")
+    if structure["sweep_high"]:
+        short_score += 2
+        reasons_short.append("سحب سيولة أعلى القمة ثم إغلاق أسفل")
+    if structure.get("fvg_bull"):
+        long_score += 1
+        reasons_long.append("Bullish FVG")
+    if structure.get("fvg_bear"):
+        short_score += 1
+        reasons_short.append("Bearish FVG")
+    if imbalance is not None:
+        if imbalance > 15:
+            long_score += 1
+            reasons_long.append("دفتر الأوامر يميل للشراء")
+        elif imbalance < -15:
+            short_score += 1
+            reasons_short.append("دفتر الأوامر يميل للبيع")
+    if oi_change is not None and oi_change > 0.5:
+        if last["close"] > prev["close"]:
+            long_score += 1
+            reasons_long.append("ارتفاع OI مع صعود السعر")
+        elif last["close"] < prev["close"]:
+            short_score += 1
+            reasons_short.append("ارتفاع OI مع هبوط السعر")
 
-with st.sidebar:
-    st.markdown("## 🎛️ إعدادات الماسح")
-    platform = st.selectbox("منصة العقود الآجلة", ["KUCOIN", "BINANCE", "BYBIT", "MEXC"])
-    st.markdown("### اتجاه الصفقة")
-    want_long = st.checkbox("🚀 LONG", value=True)
-    want_short = st.checkbox("📉 SHORT", value=True)
-    st.markdown("### الفلاتر")
-    use_fvg = st.checkbox("FVG", value=False)
-    mtf_filter = st.checkbox("تأكيد الاتجاه متعدد الأطر (MTF)", value=False)
-    btc_filter = st.checkbox("فلتر اتجاه BTC", value=True)
-    funding_filter = st.checkbox("فلتر Funding Futures", value=False)
-    wall_filter = st.checkbox("دفتر أوامر Futures (حسب المنصة)", value=False)
-    killzone = st.checkbox("عرض نوافذ السيولة التقريبية", value=True)
-    confirm_exchanges = st.checkbox("فحص توافر الرمز على 5 منصات Spot", value=False)
-    st.markdown("### التصفية")
-    min_score = st.slider("أقل Score", 0, 95, 20)
-    limit_coins = st.slider("عدد العملات للفحص", 10, 100, 40, step=5)
-    timeframe = st.selectbox("الإطار الزمني للعقود", ["1m", "3m", "5m", "15m", "1h"], index=2)
-    bars_limit = st.select_slider("عدد الشموع", options=[100, 250, 500, 1000], value=500)
-    capital_usdt = st.number_input("رأس المال USDT لحساب الحجم", min_value=10.0, value=100.0, step=10.0)
-    risk_pct = st.number_input("المخاطرة لكل صفقة %", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
-    fee_pct = st.number_input("رسوم تقديرية للدخول والخروج %", min_value=0.0, max_value=2.0, value=0.10, step=0.01)
-    slippage_pct = st.number_input("انزلاق تقديري %", min_value=0.0, max_value=2.0, value=0.05, step=0.01)
-    telegram_enabled = st.checkbox("إرسال أفضل الإشارات إلى Telegram", value=False)
-    if st.button("📡 اختبار Telegram"):
-        ok, message = send_telegram("🧪 اختبار BLY7TRADER — اتصال Telegram يعمل.")
-        st.success(message) if ok else st.error(message)
+    side = "LONG" if long_score >= short_score else "SHORT"
+    score = max(long_score, short_score)
+    if score < 5:
+        return None
 
-settings = {
-    "want_long": want_long,
-    "want_short": want_short,
-    "use_fvg": use_fvg,
-    "mtf_filter": mtf_filter,
-    "btc_filter": btc_filter,
-    "funding_filter": funding_filter,
-    "wall_filter": wall_filter,
-    "killzone": killzone,
-    "confirm_exchanges": confirm_exchanges,
-    "min_score": min_score,
-    "capital_usdt": capital_usdt, "risk_pct": risk_pct,
-    "fee_pct": fee_pct, "slippage_pct": slippage_pct,
-    "timeframe": timeframe,
-}
+    is_long = side == "LONG"
+    entry = price
+    stop = price - atr * 1.5 if is_long else price + atr * 1.5
+    risk = abs(entry - stop)
+    tp1 = entry + risk if is_long else entry - risk
+    tp2 = entry + risk * 2 if is_long else entry - risk * 2
+    tp3 = entry + risk * 3 if is_long else entry - risk * 3
 
+    return {
+        "symbol": symbol, "exchange": exchange, "side": side,
+        "score": int(score), "price": price, "entry": entry,
+        "stop": stop, "tp1": tp1, "tp2": tp2, "tp3": tp3,
+        "rsi": safe_float(last["rsi"]), "ema9": safe_float(last["ema9"]),
+        "ema21": safe_float(last["ema21"]), "ema200": safe_float(last["ema200"]),
+        "macd": safe_float(last["macd"]), "atr": atr,
+        "momentum": safe_float(last["momentum"]),
+        "volume_ratio": safe_float(last["volume_ratio"]),
+        "cvd": safe_float(last["cvd_proxy"]), "cvd_source": "CANDLE_PROXY",
+        "funding_pct": funding if funding is not None else 0,
+        "oi_change_pct": oi_change if oi_change is not None else 0,
+        "orderbook_imbalance": imbalance,
+        "bsl": structure["bsl"], "ssl": structure["ssl"],
+        "fvg": structure["fvg"], "order_block_heuristic": structure["ob"],
+        "sweep_high": structure["sweep_high"], "sweep_low": structure["sweep_low"],
+        "reasons": reasons_long if is_long else reasons_short,
+        "change_pct": safe_float((last["close"] / df.iloc[-2]["close"] - 1) * 100),
+        "timeframe": timeframe,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "liquidity_note": "BSL/SSL تقديرات من الشموع وليست خريطة تصفيات فعلية",
+    }
+    # ----------------------------- Pump / Dump Scanner -----------------------------
 
-# ----------------------------- Main navigation -----------------------------
+def scan_pump_dump(exchange="BINANCE", limit=80, timeframe="5m"):
+    symbols = fetch_futures_symbols(exchange, limit)
+    results = []
+    for symbol in symbols:
+        try:
+            df = add_indicators(fetch_futures_klines(exchange, symbol, timeframe, 100))
+            if df.empty or len(df) < 30:
+                continue
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            price_change = safe_float((last["close"] / prev["close"] - 1) * 100)
+            volume_ratio = safe_float(last["volume_ratio"])
+            cvd = safe_float(last["cvd_proxy"])
+            rsi = safe_float(last["rsi"])
+            trend_up = last["ema9"] > last["ema21"]
+            trend_down = last["ema9"] < last["ema21"]
 
-section = st.radio(
-    "القسم",
-    ["🔎 الماسح", "📉 DUMP / SHORT", "🚀 DEX", "📊 سجل الإشارات", "🧠 الذاكرة والتعلّم", "🧪 اختبار تاريخي"],
-    horizontal=True,
-)
+            pump_score = 0
+            dump_score = 0
+            pump_reasons, dump_reasons = [], []
 
-if section in ("🔎 الماسح", "📉 DUMP / SHORT"):
-    is_dump_section = section == "📉 DUMP / SHORT"
-    st.subheader("📉 ماسح SHORT" if is_dump_section else "🔎 ماسح السوق")
-    st.caption(
-        f"المصدر: {platform} USDT-M Futures | TF: {timeframe} | الشموع: {bars_limit} | العملات: {limit_coins} | أقل Score: {min_score} | "
-        f"توقيت القاهرة: {now_cairo().strftime('%H:%M')}"
-    )
+            if price_change >= 1:
+                pump_score += 2
+                pump_reasons.append("ارتفاع سعري سريع")
+            if price_change <= -1:
+                dump_score += 2
+                dump_reasons.append("هبوط سعري سريع")
+            if volume_ratio >= 2:
+                pump_score += 2
+                dump_score += 2
+                pump_reasons.append("حجم تداول استثنائي")
+                dump_reasons.append("حجم تداول استثنائي")
+            if trend_up:
+                pump_score += 1
+                pump_reasons.append("اتجاه EMA صاعد")
+            if trend_down:
+                dump_score += 1
+                dump_reasons.append("اتجاه EMA هابط")
+            if cvd > 0:
+                pump_score += 1
+            elif cvd < 0:
+                dump_score += 1
+            if rsi >= 55:
+                pump_score += 1
+            if rsi <= 45:
+                dump_score += 1
 
-    button_label = "📉 افحص فرص SHORT" if is_dump_section else "🔍 افحص السوق الآن"
-    if st.button(button_label, type="primary"):
-        symbol_sources = {"KUCOIN": get_kucoin_futures_symbols,
-                          "BINANCE": get_binance_futures_symbols,
-                          "BYBIT": get_bybit_futures_symbols,
-                          "MEXC": get_mexc_futures_symbols}
-        symbols = symbol_sources[platform](limit_coins)
-        st.info(f"تم العثور على {len(symbols)} رمزًا للفحص.")
-        signals, debug = [], []
-        progress = st.progress(0)
-        status = st.empty()
-
-        for index, symbol in enumerate(symbols):
-            progress.progress((index + 1) / max(len(symbols), 1))
-            status.caption(f"يفحص {symbol} ({index + 1}/{len(symbols)})")
-            candle_sources = {"KUCOIN": get_kucoin_futures_klines,
-                              "BINANCE": get_binance_futures_klines,
-                              "BYBIT": get_bybit_futures_klines,
-                              "MEXC": get_mexc_futures_klines}
-            frame = candle_sources[platform](symbol, timeframe, bars_limit)
-            if frame is not None:
-                signal, reason = analyze(frame, symbol, settings, platform)
-                if signal and (not is_dump_section or signal["type"] == "SHORT"):
-                    signals.append(signal)
-                elif len(debug) < 15:
-                    debug.append({"العملة": symbol, "السبب": reason})
+            if pump_score >= 4 and pump_score > dump_score:
+                kind, score, reasons = "PUMP", pump_score, pump_reasons
+            elif dump_score >= 4 and dump_score > pump_score:
+                kind, score, reasons = "DUMP", dump_score, dump_reasons
             else:
-                if len(debug) < 15:
-                    debug.append({"العملة": symbol, "السبب": "تعذر جلب الشموع"})
-            time.sleep(0.08)
+                continue
 
-        progress.empty()
-        status.empty()
-
-        signals.sort(key=lambda item: item["score"], reverse=True)
-        if signals:
-            save_signals(signals, platform)
-            st.success(f"تم العثور على {len(signals)} إشارة مطابقة.")
-            if telegram_enabled:
-                send_signal_batch(signals)
-
-            for signal in signals:
-                with st.container(border=True):
-                    left, right = st.columns([4, 1])
-                    with left:
-                        st.markdown(
-                            f"### {'🚀' if signal['type'] == 'LONG' else '📉'} "
-                            f"{signal['symbol']} — {signal['type']}"
-                        )
-                        st.write(
-                            f"السعر: **{signal['price']}** | "
-                            f"تغير الساعة: **{signal['ch']}%** | "
-                            f"Volume: **x{signal['vol']}** | "
-                            f"CVD proxy: **{signal['buy']}%**"
-                        )
-                    with right:
-                        st.metric("Score", f"{signal['score']}/100")
-                    a, b, c, d = st.columns(4)
-                    a.metric("الدخول", signal["entry"])
-                    b.metric("وقف الخسارة", signal["stop"])
-                    c.metric("TP1", signal["tp1"])
-                    d.metric("TP2", signal["tp2"])
-                    st.metric("TP3", signal["tp3"])
-                    st.caption(f"R:R إلى TP1 = {signal['rr_tp1']} | حجم المركز النظري = {signal['position_qty']} | مصدر CVD: {'تداولات فعلية' if signal['real_cvd'] is not None else 'Proxy شموع'}")
-                    with st.expander("تفاصيل التحليل"):
-                        st.text(signal["extra"])
-        else:
-            st.warning("لم تظهر إشارات مطابقة للفلاتر الحالية.")
-        if debug:
-            with st.expander("أسباب استبعاد بعض العملات"):
-                st.dataframe(pd.DataFrame(debug), use_container_width=True)
+            results.append({
+                "exchange": exchange, "symbol": symbol,
+                "type": kind, "score": score,
+                "price": safe_float(last["close"]),
+                "change_pct": price_change,
+                "volume_ratio": volume_ratio,
+                "rsi": rsi, "reasons": "، ".join(reasons),
+                "time": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            continue
+    return sorted(results, key=lambda x: x["score"], reverse=True)
 
 
-elif section == "🚀 DEX":
-    st.subheader("🚀 ماسح DEX — BNB Smart Chain")
-    st.caption("شروط افتراضية: حجم 5 دقائق ≥ 5,000$، تغير ≥ 5%، سيولة ≥ 15,000$.")
-    if st.button("🚀 افحص DEX الآن", type="primary"):
-        dex_signals = scan_dex()
-        if not dex_signals:
-            st.info("لا توجد أزواج مطابقة للشروط حاليًا.")
-        for item in dex_signals:
-            with st.container(border=True):
-                st.markdown(f"### 🚀 {item['symbol']}")
-                st.write(
-                    f"السعر: ${item['price']:.10g} | تغير 5 دقائق: "
-                    f"{item['change_5m']:.2f}% | حجم 5 دقائق: "
-                    f"${item['volume_5m']:,.0f} | السيولة: ${item['liquidity']:,.0f}"
-                )
-                if item["url"]:
-                    st.markdown(f"[فتح الزوج على DexScreener]({item['url']})")
-                if telegram_enabled:
-                    message = (
-                        f"🚀 DEX {item['symbol']} على BSC\n"
-                        f"السعر: ${item['price']:.10g}\n"
-                        f"تغير 5m: {item['change_5m']:.2f}%\n"
-                        f"حجم 5m: ${item['volume_5m']:,.0f}\n"
-                        f"السيولة: ${item['liquidity']:,.0f}\n"
-                        f"{item['url']}\n@WHYNOTBLY7"
-                    )
-                    ok, error = send_telegram(message)
-                    if not ok:
-                        st.warning(f"تعذر إرسال {item['symbol']}: {error}")
+# ----------------------------- DEX Scanner -----------------------------
+
+def dex_search_pairs(query=""):
+    url = "https://api.dexscreener.com/latest/dex/search"
+    data = api_json(url, {"q": query or "BSC"})
+    pairs = (data or {}).get("pairs", [])
+    return pairs if isinstance(pairs, list) else []
 
 
-elif section == "📊 سجل الإشارات":
-    st.subheader("📊 سجل الإشارات المحفوظ")
+def dex_latest_profiles():
+    try:
+        response = SESSION.get(
+            "https://api.dexscreener.com/token-profiles/latest/v1",
+            timeout=TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def dex_pair_metrics(pair):
+    price_change = pair.get("priceChange") or {}
+    volume = pair.get("volume") or {}
+    liquidity = pair.get("liquidity") or {}
+    txns = pair.get("txns") or {}
+    m5 = txns.get("m5") or {}
+    h1 = txns.get("h1") or {}
+    buys5 = safe_float(m5.get("buys"))
+    sells5 = safe_float(m5.get("sells"))
+    buys1 = safe_float(h1.get("buys"))
+    sells1 = safe_float(h1.get("sells"))
+    buy_sell = buys5 / max(sells5, 1)
+    liq = safe_float(liquidity.get("usd"))
+    vol5 = safe_float(volume.get("m5"))
+    vol1 = safe_float(volume.get("h1"))
+    change5 = safe_float(price_change.get("m5"))
+    change1 = safe_float(price_change.get("h1"))
+    return {
+        "change5": change5, "change1": change1,
+        "volume5": vol5, "volume1": vol1,
+        "liquidity": liq, "buys5": buys5, "sells5": sells5,
+        "buys1": buys1, "sells1": sells1,
+        "buy_sell_ratio": buy_sell,
+    }
+
+
+def scan_dex(chain="bsc", limit=80, min_liquidity=10000):
+    candidates = []
+    seen = set()
+
+    # Search common BSC quote assets; latest profiles add newly promoted tokens.
+    queries = ["WBNB", "USDT", "BSC"]
+    for query in queries:
+        for pair in dex_search_pairs(query):
+            if pair.get("chainId", "").lower() != chain.lower():
+                continue
+            pair_id = pair.get("pairAddress")
+            if pair_id and pair_id not in seen:
+                seen.add(pair_id)
+                candidates.append(pair)
+
+    profiles = dex_latest_profiles()
+    for profile in profiles:
+        if profile.get("chainId", "").lower() != chain.lower():
+            continue
+        token_address = profile.get("tokenAddress")
+        if not token_address:
+            continue
+        url = f"https://api.dexscreener.com/token-pairs/v1/{chain}/{token_address}"
+        try:
+            response = SESSION.get(url, timeout=TIMEOUT)
+            response.raise_for_status()
+            pairs = response.json()
+            if isinstance(pairs, list):
+                for pair in pairs:
+                    pair_id = pair.get("pairAddress")
+                    if pair_id and pair_id not in seen:
+                        seen.add(pair_id)
+                        candidates.append(pair)
+        except Exception:
+            continue
+
+    results = []
+    for pair in candidates:
+        try:
+            metrics = dex_pair_metrics(pair)
+            liq = metrics["liquidity"]
+            if liq < min_liquidity:
+                continue
+
+            base = pair.get("baseToken") or {}
+            quote = pair.get("quoteToken") or {}
+            price = safe_float(pair.get("priceUsd"))
+            if price <= 0:
+                continue
+
+            vol_liq = metrics["volume1"] / liq if liq else 0
+            score = 0
+            reasons = []
+            if metrics["change5"] >= 5:
+                score += 2
+                reasons.append("ارتفاع 5 دقائق")
+            if metrics["change5"] <= -5:
+                score += 2
+                reasons.append("هبوط 5 دقائق")
+            if metrics["volume5"] >= 10000:
+                score += 2
+                reasons.append("حجم تداول ملحوظ")
+            if metrics["buy_sell_ratio"] >= 1.5:
+                score += 2
+                reasons.append("ضغط شراء")
+            elif metrics["buy_sell_ratio"] <= 0.67:
+                score += 2
+                reasons.append("ضغط بيع")
+            if vol_liq >= 0.2:
+                score += 1
+                reasons.append("نشاط مرتفع مقارنة بالسيولة")
+
+            if score < 3:
+                continue
+
+            kind = "PUMP WATCH" if metrics["change5"] > 0 else "DUMP WATCH"
+            results.append({
+                "chain": chain.upper(),
+                "dex": pair.get("dexId", ""),
+                "symbol": base.get("symbol", ""),
+                "name": base.get("name", ""),
+                "address": base.get("address", ""),
+                "pair": pair.get("pairAddress", ""),
+                "url": pair.get("url", ""),
+                "quote": quote.get("symbol", ""),
+                "price": price,
+                "change5": metrics["change5"],
+                "change1": metrics["change1"],
+                "volume5": metrics["volume5"],
+                "volume1": metrics["volume1"],
+                "liquidity": liq,
+                "buys5": metrics["buys5"],
+                "sells5": metrics["sells5"],
+                "buy_sell_ratio": metrics["buy_sell_ratio"],
+                "score": score,
+                "type": kind,
+                "reasons": "، ".join(reasons),
+            })
+        except Exception:
+            continue
+
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:limit]
+
+
+# ----------------------------- Historical / Learning -----------------------------
+
+def update_learning_score():
+    profile = learning_profile()
+    if profile["total"] < 10:
+        return 0
+    # Small conservative adjustment only; not a predictive ML model.
+    return max(-2, min(2, round((profile["win_rate"] - 50) / 20, 1)))
+
+
+def get_signal_details(signal_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT * FROM signals WHERE id=?", (int(signal_id),)
+        ).fetchone()
+        columns = [x[1] for x in conn.execute("PRAGMA table_info(signals)")]
+    return dict(zip(columns, row)) if row else None
+
+
+def export_trade_records():
+    history = load_signal_history(1000)
+    if history.empty:
+        return ""
+    return history.to_csv(index=False)
+
+
+def render_learning_section():
+    st.subheader("🧠 الذاكرة الدائمة والتعلم من نتائج الصفقات")
+    profile = learning_profile()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("إجمالي الصفقات المحسومة", profile["total"])
+    c2.metric("نسبة الفوز", f"{profile['win_rate']:.1f}%")
+    c3.metric("الصفقات الرابحة", profile["wins"])
+    c4.metric("متوسط العائد", f"{profile['average_pnl']:.2f}%")
+
+    st.caption(
+        "تُحدّث النتائج آليًا عند لمس السعر لمستوى الدخول أو TP3 أو SL. "
+        "اللمس السعري لا يثبت تنفيذ أمر فعلي في حساب التداول."
+    )
     history = load_signal_history(200)
     if history.empty:
-        st.info("لا توجد إشارات محفوظة بعد. شغّل الماسح أولاً.")
+        st.info("لا توجد صفقات محفوظة حتى الآن.")
+        return
+
+    display_cols = [
+        c for c in [
+            "id", "created_at", "exchange", "symbol", "side", "score",
+            "price", "entry", "stop", "tp1", "tp2", "tp3", "last_price",
+            "status", "outcome", "pnl_pct", "last_checked_at",
+        ] if c in history.columns
+    ]
+    st.dataframe(history[display_cols], use_container_width=True, hide_index=True)
+
+    st.markdown("#### تفاصيل صفقة أو تصحيح نتيجة")
+    ids = history["id"].tolist()
+    selected_id = st.selectbox("رقم الصفقة", ids, key="learning_trade_id")
+    detail = get_signal_details(selected_id)
+    if detail:
+        st.json(detail)
+    correction = st.selectbox(
+        "تصحيح يدوي عند الحاجة",
+        ["بدون تغيير", "WIN", "LOSS", "BREAKEVEN", "OPEN"],
+        key="learning_correction",
+    )
+    if st.button("حفظ التصحيح", key="save_learning_correction"):
+        if correction != "بدون تغيير":
+            update_trade_outcome(selected_id, correction)
+            st.success("تم حفظ التصحيح.")
+            st.rerun()
+
+    csv_data = export_trade_records()
+    if csv_data:
+        st.download_button(
+            "تنزيل سجل الصفقات CSV",
+            data=csv_data,
+            file_name="BLY7TRADER_trade_history.csv",
+            mime="text/csv",
+                        )# ----------------------------- Main UI -----------------------------
+
+def render_market_scanner():
+    st.subheader("🔎 Futures Scanner — ماسح العقود")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        exchange = st.selectbox(
+            "المنصة",
+            ["BINANCE", "KUCOIN", "BYBIT", "MEXC"],
+            key="scan_exchange",
+        )
+    with c2:
+        timeframe = st.selectbox(
+            "الإطار الزمني",
+            ["1m", "3m", "5m", "15m", "1h", "4h"],
+            index=2,
+            key="scan_timeframe",
+        )
+    with c3:
+        limit = st.slider("عدد العملات", 10, 100, 40, 10, key="scan_limit")
+    with c4:
+        min_score = st.slider("أقل قوة للإشارة", 3, 10, 5, key="scan_min_score")
+
+    if st.button("🚀 افحص السوق الآن", type="primary", key="run_futures_scan"):
+        with st.spinner("جاري فحص عقود Futures وجمع البيانات..."):
+            symbols = fetch_futures_symbols(exchange, limit)
+            results = []
+            progress = st.progress(0)
+            status = st.empty()
+            for index, symbol in enumerate(symbols):
+                status.text(f"فحص {symbol} — {index + 1}/{len(symbols)}")
+                signal = build_trade_signal(exchange, symbol, timeframe, 300)
+                if signal and signal["score"] >= min_score:
+                    results.append(signal)
+                progress.progress((index + 1) / max(len(symbols), 1))
+            status.empty()
+            progress.empty()
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        st.session_state["latest_signals"] = results
+        saved = save_signals(results, exchange)
+        st.success(
+            f"انتهى الفحص: {len(results)} إشارة مطابقة، "
+            f"وتم حفظ {saved} إشارة جديدة."
+        )
+
+    results = st.session_state.get("latest_signals", [])
+    if not results:
+        st.info("اضغط افحص السوق الآن لبدء البحث عن فرص.")
+        return
+
+    for signal in results:
+        title = (
+            f"{'🟢' if signal['side'] == 'LONG' else '🔴'} "
+            f"{signal['symbol']} — {signal['side']} — "
+            f"Score {signal['score']}"
+        )
+        with st.expander(title, expanded=True):
+            a, b, c = st.columns(3)
+            a.metric("السعر الحالي وقت الفحص", f"{signal['price']:.10g}")
+            b.metric("RSI", f"{signal['rsi']:.2f}")
+            c.metric("نسبة الحجم", f"{signal['volume_ratio']:.2f}x")
+
+            x, y, z = st.columns(3)
+            x.metric("Entry", f"{signal['entry']:.10g}")
+            y.metric("Stop Loss", f"{signal['stop']:.10g}")
+            z.metric("Funding", f"{signal['funding_pct']:.5f}%")
+
+            st.markdown(
+                f"""
+                **TP1:** `{signal['tp1']:.10g}`  
+                **TP2:** `{signal['tp2']:.10g}`  
+                **TP3:** `{signal['tp3']:.10g}`  
+                **EMA9 / EMA21:** `{signal['ema9']:.8g}` / `{signal['ema21']:.8g}`  
+                **MACD:** `{signal['macd']:.8g}`  
+                **ATR:** `{signal['atr']:.8g}`  
+                **OI Change:** `{signal['oi_change_pct']:.4f}%`  
+                **CVD:** `{signal['cvd']:.4f}` — `{signal['cvd_source']}`  
+                **Order Book Imbalance:** `{signal['orderbook_imbalance']}`  
+                **BSL:** `{signal['bsl']}` | **SSL:** `{signal['ssl']}`
+                """
+            )
+            st.write("**أسباب الإشارة:**", " — ".join(signal["reasons"]))
+            cornix_text = cornix_signal_text(
+                signal, exchange, timeframe, 1
+            )
+            st.text_area(
+                "صيغة الإشارة المتوافقة مع إعدادات Cornix",
+                value=cornix_text,
+                height=220,
+                key=f"cornix_{exchange}_{signal['symbol']}_{signal['side']}",
+            )
+            st.caption(
+                "CVD هنا تقديري من اتجاه الشمعة وحجمها، "
+                "وليس CVD مبنيًا على سجل كل صفقة منفردة."
+            )
+
+
+def render_pump_dump():
+    st.subheader("🚨 Pump / Dump — ماسح المضخات والتفريغ")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        exchange = st.selectbox(
+            "منصة العقود",
+            ["BINANCE", "KUCOIN", "BYBIT", "MEXC"],
+            key="pump_exchange",
+        )
+    with c2:
+        limit = st.slider(
+            "عدد العملات للفحص", 10, 100, 50, 10,
+            key="pump_limit",
+        )
+    with c3:
+        timeframe = st.selectbox(
+            "إطار المضخة والتفريغ",
+            ["1m", "5m", "15m"],
+            index=1,
+            key="pump_timeframe",
+        )
+
+    if st.button("⚡ ابدأ فحص Pump / Dump", key="run_pump_scan"):
+        with st.spinner("تحليل تغير السعر والحجم والاتجاه..."):
+            results = scan_pump_dump(exchange, limit, timeframe)
+        st.session_state["pump_results"] = results
+        st.success(f"تم الفحص. عدد الحالات المكتشفة: {len(results)}")
+
+    results = st.session_state.get("pump_results", [])
+    if results:
+        df = pd.DataFrame(results)
+        st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.dataframe(history, use_container_width=True, hide_index=True)
+        st.info("لا توجد نتائج معروضة. ابدأ الفحص أولًا.")
+
+
+def render_dex_scanner():
+    st.subheader("🌐 DEX Scanner — فحص السيولة والنشاط")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        chain = st.selectbox(
+            "الشبكة", ["bsc", "ethereum", "base", "solana"],
+            key="dex_chain",
+        )
+    with c2:
+        minimum_liquidity = st.number_input(
+            "أقل سيولة بالدولار",
+            min_value=1000,
+            max_value=10000000,
+            value=10000,
+            step=1000,
+            key="dex_min_liquidity",
+        )
+    with c3:
+        limit = st.slider(
+            "عدد النتائج", 10, 100, 40, 10,
+            key="dex_limit",
+        )
+
+    if st.button("🔍 افحص DEX الآن", key="run_dex_scan"):
+        with st.spinner("جاري جمع أزواج التداول وفحص السيولة والحجم..."):
+            results = scan_dex(chain, limit, minimum_liquidity)
+        st.session_state["dex_results"] = results
+        st.success(f"تم العثور على {len(results)} زوجًا مطابقًا.")
+
+    results = st.session_state.get("dex_results", [])
+    if results:
+        for item in results:
+            with st.expander(
+                f"{item['symbol']} — {item['type']} — Score {item['score']}"
+            ):
+                a, b, c = st.columns(3)
+                a.metric("السعر بالدولار", f"{item['price']:.10g}")
+                b.metric("التغير 5 دقائق", f"{item['change5']:.2f}%")
+                c.metric("السيولة", f"${item['liquidity']:,.0f}")
+                st.write(f"**DEX:** {item['dex']} | **Quote:** {item['quote']}")
+                st.write(f"**الحجم 5 دقائق:** ${item['volume5']:,.2f}")
+                st.write(f"**الحجم ساعة:** ${item['volume1']:,.2f}")
+                st.write(
+                    f"**شراء 5 دقائق:** {item['buys5']} | "
+                    f"**بيع 5 دقائق:** {item['sells5']}"
+                )
+                st.write(f"**نسبة الشراء إلى البيع:** {item['buy_sell_ratio']:.2f}")
+                st.write(f"**التقييم:** {item['reasons']}")
+                st.code(item["address"])
+                if item["url"]:
+                    st.markdown(f"[فتح الزوج على DexScreener]({item['url']})")
+    else:
+        st.info("ابدأ فحص DEX لعرض الأزواج المكتشفة.")
+
+
+def render_live_trade_monitor():
+    """Runs a periodic server-side price check while the app session is active."""
+    updated, errors = track_open_trades()
+    history = load_signal_history(500)
+    open_count = 0
+    if not history.empty and "outcome" in history.columns:
+        open_count = int((history["outcome"] == "OPEN").sum())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("صفقات مفتوحة أو قيد الدخول", open_count)
+    c2.metric("تحديثات الأسعار في هذه الدورة", updated)
+    c3.metric("أخطاء جلب السعر", len(errors))
+
+    if errors:
         st.caption(
-            "السجل يحفظ الإشارات الصادرة فقط. لا تُحسب نسبة نجاح تلقائية حتى تتم إضافة "
-            "آلية متابعة مستقبلية موثوقة لأسعار TP وSL."
+            "تعذر تحديث بعض الأزواج: " + ", ".join(errors[:8])
+        )
+
+    if not history.empty:
+        cols = [
+            c for c in [
+                "id", "exchange", "symbol", "side", "entry",
+                "last_price", "stop", "tp1", "tp2", "tp3",
+                "status", "outcome", "pnl_pct", "last_checked_at",
+            ] if c in history.columns
+        ]
+        st.dataframe(
+            history[history["outcome"] == "OPEN"][cols].head(100),
+            use_container_width=True,
+            hide_index=True,
         )
 
 
-elif section == "🧠 الذاكرة والتعلّم":
-    st.subheader("🧠 الذاكرة الدائمة — سجل نتائج الصفقات")
+def render_history_section():
+    st.subheader("📚 سجل الإشارات والصفقات")
+    history = load_signal_history(300)
+    if history.empty:
+        st.info("لا توجد صفقات محفوظة.")
+        return
+    st.dataframe(history, use_container_width=True, hide_index=True)
+
+
+def render_dashboard():
+    st.subheader("📊 لوحة معلومات BLY7TRADER")
     profile = learning_profile()
-    a,b,c = st.columns(3)
-    a.metric("صفقات محسومة", profile["trades"])
-    b.metric("Win Rate", f"{profile['win_rate']:.1f}%")
-    c.metric("تعديل السكور المتعلّم", f"{profile['adjustment']:+d}")
-    st.caption("قاعدة البيانات SQLite محلية ودائمة. لا يُفعّل تعديل السكور إلا بعد 10 نتائج WIN/LOSS مؤكدة يدويًا.")
-    st.write("**الأداء حسب الاتجاه**")
-    st.dataframe(pd.DataFrame([{"الاتجاه":k, **v} for k,v in profile["by_side"].items()]), use_container_width=True, hide_index=True)
-    with sqlite3.connect(DB_PATH) as conn:
-        open_trades = pd.read_sql_query("SELECT id,created_at,exchange,symbol,side,score,entry,stop,tp1,tp2,tp3,outcome FROM signals WHERE outcome='OPEN' ORDER BY id DESC LIMIT 300", conn)
-        all_trades = pd.read_sql_query("SELECT id,created_at,exchange,symbol,side,score,entry,stop,tp1,tp2,tp3,outcome,pnl_pct,result_source FROM signals ORDER BY id DESC LIMIT 500", conn)
-    st.markdown("#### تحديث نتيجة صفقة")
-    if not open_trades.empty:
-        options = {f"#{int(r.id)} {r.exchange} {r.symbol} {r.side} | {r.created_at[:16]}": int(r.id) for r in open_trades.itertuples()}
-        selected_label = st.selectbox("اختر الإشارة", list(options))
-        result_choice = st.selectbox("النتيجة المؤكدة", ["WIN", "LOSS", "BREAKEVEN", "OPEN"])
-        if st.button("💾 حفظ نتيجة الصفقة"):
-            update_trade_outcome(options[selected_label], result_choice)
-            st.success("تم حفظ النتيجة في الذاكرة الدائمة وتحديث إحصاءات التعلّم.")
-    else:
-        st.info("لا توجد صفقات مفتوحة في السجل.")
-    st.markdown("#### سجل النتائج")
-    if not all_trades.empty:
-        st.dataframe(all_trades, use_container_width=True, hide_index=True)
-    else:
-        st.info("سيظهر السجل بعد أول عملية فحص.")
+    history = load_signal_history(500)
+    total = len(history)
+    open_trades = (
+        int((history["outcome"] == "OPEN").sum())
+        if not history.empty else 0
+    )
+    a, b, c, d = st.columns(4)
+    a.metric("إجمالي الإشارات", total)
+    b.metric("الصفقات المفتوحة", open_trades)
+    c.metric("نسبة الفوز", f"{profile['win_rate']:.1f}%")
+    d.metric("متوسط العائد", f"{profile['average_pnl']:.2f}%")
 
 
-elif section == "🧪 اختبار تاريخي":
-    st.subheader("🧪 اختبار تاريخي مبسط — Binance")
-    test_symbol = st.selectbox("العملة", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"])
-    if st.button("▶️ شغّل الاختبار", type="primary"):
-        frame = get_binance_klines(test_symbol)
-        if frame is None or len(frame) < 50:
-            st.error("تعذر جلب بيانات كافية للاختبار.")
-        else:
-            # This is a transparent baseline test, not a simulation of every live filter.
-            # It evaluates a simple candle-volume directional signal on subsequent bars.
-            wins, losses, unresolved = 0, 0, 0
-            trades = []
-            for index in range(25, len(frame) - 5):
-                history_frame = frame.iloc[: index + 1].copy()
-                proxy = candle_volume_delta_proxy(history_frame)
-                if abs(proxy) < 20:
-                    continue
-                entry_price = safe_float(frame["close"].iloc[index])
-                side = "LONG" if proxy > 0 else "SHORT"
-                stop_price = entry_price * (0.98 if side == "LONG" else 1.02)
-                target_price = entry_price * (1.03 if side == "LONG" else 0.97)
-                outcome = "UNRESOLVED"
-                future = frame.iloc[index + 1 : index + 6]
-                for _, candle in future.iterrows():
-                    high, low = safe_float(candle["high"]), safe_float(candle["low"])
-                    hit_stop = low <= stop_price if side == "LONG" else high >= stop_price
-                    hit_target = high >= target_price if side == "LONG" else low <= target_price
-                    # Conservative tie-break: if both hit in one candle, count stop first.
-                    if hit_stop:
-                        outcome = "LOSS"
-                        break
-                    if hit_target:
-                        outcome = "WIN"
-                        break
-                if outcome == "WIN":
-                    wins += 1
-                elif outcome == "LOSS":
-                    losses += 1
-                else:
-                    unresolved += 1
-                trades.append({
-                    "index": index, "side": side, "entry": entry_price,
-                    "outcome": outcome,
-                })
+def main():
+    init_db()
 
-            total = wins + losses
-            win_rate = wins / total * 100 if total else 0
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("الإشارات", len(trades))
-            c2.metric("رابحة", wins)
-            c3.metric("خاسرة", losses)
-            c4.metric("غير محسومة", unresolved)
-            st.metric("نسبة الفوز من الصفقات المحسومة", f"{win_rate:.1f}%")
-            if trades:
-                st.dataframe(pd.DataFrame(trades), use_container_width=True)
-            st.caption(
-                "تنبيه: الاختبار يستخدم آخر 100 شمعة متاحة فقط، ولا يشمل رسوم التداول "
-                "أو الانزلاق أو التمويل، ولا يمثل ضمانًا للأداء المستقبلي."
-            )
+    st.sidebar.title("BLY7TRADER")
+    st.sidebar.caption("Futures • Pump/Dump • DEX • Learning")
+    st.sidebar.write("الوقت:", now_cairo().strftime("%Y-%m-%d %H:%M:%S"))
+
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 الرئيسية",
+        "🔎 Futures Scanner",
+        "🚨 Pump / Dump",
+        "🌐 DEX",
+        "🧠 التعلم والذاكرة",
+        "📚 سجل الصفقات",
+    ])
+
+    with tab1:
+        render_dashboard()
+        st.divider()
+        st.markdown("### 🔄 مراقبة الصفقات المفتوحة")
+        st.caption(
+            "تُحدّث الأسعار دوريًا أثناء بقاء جلسة التطبيق نشطة. "
+            "هذا تتبع سعري افتراضي وليس تنفيذ أوامر في حساب التداول."
+        )
+
+        @st.fragment(run_every="10s")
+        def live_monitor_fragment():
+            render_live_trade_monitor()
+
+        live_monitor_fragment()
+
+    with tab2:
+        render_market_scanner()
+
+    with tab3:
+        render_pump_dump()
+
+    with tab4:
+        render_dex_scanner()
+
+    with tab5:
+        render_learning_section()
+        st.divider()
+        st.write(
+            "تعديل درجة التعلم الحالي:",
+            update_learning_score(),
+            "— يبدأ بعد 10 نتائج محسومة، وهو تعديل إحصائي بسيط وليس نموذج ذكاء اصطناعي."
+        )
+
+    with tab6:
+        render_history_section()
+
+    st.divider()
+    st.caption(
+        "BLY7TRADER — أدوات تحليل ومتابعة تعليمية. "
+        "لا يوجد ضمان للربح. تحقق من الأسعار والتنفيذ الفعلي لدى منصتك."
+    )
 
 
-st.markdown("---")
-st.caption(
-    "BLY7TRADER | Futures market data from public exchange APIs; outages/rate limits may occur. "
-    "لا تنفّذ صفقة اعتمادًا على الإشارة وحدها؛ راجع السيولة والسبريد والمخاطرة."
-)
+if __name__ == "__main__":
+    main()
