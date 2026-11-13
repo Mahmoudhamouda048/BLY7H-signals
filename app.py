@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import sqlite3
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -20,7 +21,7 @@ st.set_page_config(
 CAIRO = ZoneInfo("Africa/Cairo")
 DB_PATH = "bly7h_elite.db"
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "BLY7TRADER-ELITE/V1"})
+SESSION.headers.update({"User-Agent": "BLY7TRADER-ELITE/V2"})
 TIMEOUT = 12
 
 # ====================== STYLE ======================
@@ -37,9 +38,6 @@ div[data-testid="stMetric"] {
 }
 .stExpander {
     border: 1px solid #1E2530; border-radius: 14px; background: #12161F;
-}
-section[data-testid="stSidebar"] {
-    background: #0F131B; border-right: 1px solid #1E2530;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -70,7 +68,7 @@ def api_json(url, params=None, timeout=TIMEOUT):
         if r.status_code != 200:
             return None
         j = r.json()
-        if isinstance(j, dict) and j.get("code") not in (None, "200000", 200, 0):
+        if isinstance(j, dict) and j.get("code") not in (None, "200000", 200, 0, "0"):
             return None
         return j
     except Exception:
@@ -150,7 +148,6 @@ def init_db():
         """)
         c.commit()
 
-import sqlite3
 init_db()
 
 def get_active_weights():
@@ -240,8 +237,7 @@ def atr(df, n=14):
 
 # ====================== STRUCTURE ENGINE ======================
 def detect_swings(df, left=2, right=2):
-    highs = []
-    lows = []
+    highs, lows = [], []
     for i in range(left, len(df) - right):
         window_high = df["high"].iloc[i-left:i+right+1]
         window_low = df["low"].iloc[i-left:i+right+1]
@@ -274,21 +270,14 @@ def detect_market_structure(df):
     if bias == "BEARISH" and close < last_low:
         bos = True
 
-    return {
-        "bias": bias,
-        "bos": bos,
-        "last_high": last_high,
-        "last_low": last_low
-    }
+    return {"bias": bias, "bos": bos, "last_high": last_high, "last_low": last_low}
 
 def detect_order_blocks(df, lookback=25):
-    bullish_obs = []
-    bearish_obs = []
+    bullish_obs, bearish_obs = [], []
     for i in range(5, min(len(df)-2, lookback)):
         atr_val = float(atr(df.iloc[:i+1]).iloc[-1]) if i > 14 else 0
         if atr_val <= 0:
             continue
-        # Bullish OB
         if df["close"].iloc[i] < df["open"].iloc[i]:
             move = float(df["close"].iloc[i+1:i+4].max() - df["low"].iloc[i])
             if move > 1.1 * atr_val:
@@ -297,7 +286,6 @@ def detect_order_blocks(df, lookback=25):
                     "bottom": float(df["low"].iloc[i]),
                     "mid": (float(df["high"].iloc[i]) + float(df["low"].iloc[i])) / 2
                 })
-        # Bearish OB
         if df["close"].iloc[i] > df["open"].iloc[i]:
             move = float(df["high"].iloc[i] - df["close"].iloc[i+1:i+4].min())
             if move > 1.1 * atr_val:
@@ -348,6 +336,13 @@ def calc_cvd_proxy(df, period=20):
     return (buy_vol - sell_vol) / total * 100
 
 # ====================== EXCHANGE DATA ======================
+def binance_futures_symbols(limit=200):
+    p = api_json("https://fapi.binance.com/fapi/v1/exchangeInfo")
+    if not p:
+        return []
+    out = [s["symbol"] for s in p.get("symbols", []) if s.get("contractType") == "PERPETUAL" and s.get("symbol", "").endswith("USDT") and s.get("status") == "TRADING"]
+    return out[:limit]
+
 def kucoin_futures_symbols(limit=200):
     p = api_json("https://api-futures.kucoin.com/api/v1/contracts/active")
     data = (p or {}).get("data", [])
@@ -363,10 +358,21 @@ def mexc_futures_symbols(limit=200):
 def bybit_futures_symbols(limit=200):
     p = api_json("https://api.bybit.com/v5/market/instruments-info", {"category": "linear", "limit": 1000})
     data = (p or {}).get("result", {}).get("list", [])
-    out = [c.get("symbol") for c in data if c.get("symbol", "").endswith("USDT")]
+    out = [c.get("symbol") for c in data if c.get("symbol", "").endswith("USDT") and c.get("status") == "Trading"]
     return out[:limit]
 
-def klines_kucoin(symbol, gran=15, limit=150):
+def klines_binance(symbol, interval="1h", limit=150):
+    p = api_json("https://fapi.binance.com/fapi/v1/klines", {
+        "symbol": symbol, "interval": interval, "limit": limit
+    })
+    if not p or len(p) < 40:
+        return None
+    df = pd.DataFrame(p, columns=["time", "open", "high", "low", "close", "vol", "close_time", "quote_vol", "trades", "taker_buy_vol", "taker_buy_quote", "ignore"])
+    for col in ["open", "high", "low", "close", "vol"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df[["time", "open", "high", "low", "close", "vol"]].dropna().reset_index(drop=True)
+
+def klines_kucoin(symbol, gran=60, limit=150):
     end = int(time.time() * 1000)
     start = end - limit * gran * 60 * 1000
     p = api_json("https://api-futures.kucoin.com/api/v1/kline/query", {
@@ -380,22 +386,42 @@ def klines_kucoin(symbol, gran=15, limit=150):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df.dropna().reset_index(drop=True)
 
-def klines_mexc(symbol, interval="15m", limit=150):
-    p = api_json("https://contract.mexc.com/api/v1/contract/kline", {
-        "symbol": symbol, "interval": interval, "limit": limit
+def klines_mexc(symbol, interval="Hour1", limit=150):
+    # MEXC uses different interval names
+    p = api_json("https://contract.mexc.com/api/v1/contract/kline/" + symbol, {
+        "interval": interval, "limit": limit
     })
+    if not p:
+        # fallback
+        p = api_json("https://contract.mexc.com/api/v1/contract/kline", {
+            "symbol": symbol, "interval": interval, "limit": limit
+        })
     d = (p or {}).get("data", [])
     if not d or len(d) < 40:
         return None
     try:
-        df = pd.DataFrame(d, columns=["time", "open", "high", "low", "close", "vol"])
+        # MEXC sometimes returns dict of lists
+        if isinstance(d, dict):
+            df = pd.DataFrame({
+                "time": d.get("time", []),
+                "open": d.get("open", []),
+                "high": d.get("high", []),
+                "low": d.get("low", []),
+                "close": d.get("close", []),
+                "vol": d.get("vol", [])
+            })
+        else:
+            df = pd.DataFrame(d)
+            if len(df.columns) >= 6:
+                df = df.iloc[:, :6]
+                df.columns = ["time", "open", "high", "low", "close", "vol"]
         for col in ["open", "high", "low", "close", "vol"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         return df.dropna().reset_index(drop=True)
     except Exception:
         return None
 
-def klines_bybit(symbol, interval="15", limit=150):
+def klines_bybit(symbol, interval="60", limit=150):
     p = api_json("https://api.bybit.com/v5/market/kline", {
         "category": "linear", "symbol": symbol, "interval": interval, "limit": limit
     })
@@ -407,14 +433,18 @@ def klines_bybit(symbol, interval="15", limit=150):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df.sort_values("time").reset_index(drop=True)
 
-def get_klines(exchange, symbol, timeframe="15m", limit=150):
+def get_klines(exchange, symbol, timeframe="1h", limit=150):
+    if exchange == "Binance":
+        iv = {"15m": "15m", "1h": "1h", "4h": "4h"}.get(timeframe, "1h")
+        return klines_binance(symbol, iv, limit)
     if exchange == "KuCoin":
-        gran = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}.get(timeframe, 15)
+        gran = {"15m": 15, "1h": 60, "4h": 240}.get(timeframe, 60)
         return klines_kucoin(symbol, gran, limit)
     if exchange == "MEXC":
-        return klines_mexc(symbol, timeframe, limit)
+        iv = {"15m": "Min15", "1h": "Hour1", "4h": "Hour4"}.get(timeframe, "Hour1")
+        return klines_mexc(symbol, iv, limit)
     if exchange == "Bybit":
-        iv = {"1m": "1", "5m": "5", "15m": "15", "1h": "60"}.get(timeframe, "15")
+        iv = {"15m": "15", "1h": "60", "4h": "240"}.get(timeframe, "60")
         return klines_bybit(symbol, iv, limit)
     return None
 
@@ -561,7 +591,7 @@ def analyze_symbol(exchange, symbol, display_name, btc_bias="NEUTRAL", weights=N
     if len(tools_used) < 3:
         return None
 
-    # ===== STOP & TARGETS (Structure Based) =====
+    # Stop & Targets (Structure Based)
     buffer = atr_val * 0.15
 
     if side == "LONG":
@@ -633,7 +663,7 @@ def analyze_symbol(exchange, symbol, display_name, btc_bias="NEUTRAL", weights=N
         "rsi": round(rsi_val, 1)
     }
 
-# ====================== TELEGRAM ======================
+# ====================== TELEGRAM (Cornix Friendly) ======================
 def send_telegram(message):
     try:
         token = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
@@ -661,38 +691,39 @@ def send_telegram(message):
         return False, str(e)
 
 def format_signal_message(s):
-    side_emoji = "🟢 LONG" if s["type"] == "LONG" else "🔴 SHORT"
+    # الجزء ده لـ Cornix (نظيف وواضح)
+    pair = s["symbol"].replace("/USDT", "USDT").replace("_USDT", "USDT").replace("USDTM", "USDT")
+    side = s["type"]
+
+    cornix_part = f"""{pair}
+{side}
+Entry: {s['entry']:.6g}
+Stop: {s['stop']:.6g}
+TP1: {s['tp1']:.6g}
+TP2: {s['tp2']:.6g}
+TP3: {s['tp3']:.6g}
+"""
+
+    # الجزء التفصيلي بتاعنا
     tools = " + ".join(s.get("tools_used", []))
     reasons_txt = "\n".join([f"• {r}" for r in s.get("reasons", [])])
 
-    msg = f"""💎 BLY7TRADER ELITE
-
-{side_emoji}  {s['symbol']}
+    details = f"""
+💎 BLY7TRADER ELITE
 ⭐ Score: {s['score']}/100
 
-📥 Entry: {s['entry']:.6g}
-🛑 Stop: {s['stop']:.6g}
-🎯 TP1: {s['tp1']:.6g}  (R:R 1:{s['rr1']})
-🎯 TP2: {s['tp2']:.6g}  (R:R 1:{s['rr2']})
-🎯 TP3: {s['tp3']:.6g}
+📊 الأدوات: {tools}
 
-📊 الأدوات المستخدمة:
-{tools}
-
-📌 ليه الصفقة دي؟
+📌 ليه الصفقة؟
 {reasons_txt}
 
-🛑 ليه الاستوب هنا؟
-الاستوب مبني على Order Block أو آخر Swing حقيقي + Buffer بسيط من الـ ATR.
+🛑 الاستوب مبني على Order Block / Swing
+🎯 الأهداف مبنية على السيولة والهيكل
 
-🎯 ليه الأهداف هنا؟
-TP1 قريب من أقرب منطقة سيولة/هيكل.
-TP2 على مستوى السيولة السابقة.
-TP3 Runner حسب امتداد الهيكل.
-
-#BLY7TRADER #ELITE
+#BLY7TRADER
 @WHYNOTBLY7"""
-    return msg
+
+    return cornix_part + details
 
 # ====================== LEARNING ======================
 def auto_update_weights():
@@ -742,16 +773,18 @@ if section.startswith("📡"):
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        exch = st.selectbox("المنصة", ["KuCoin", "MEXC", "Bybit"])
+        exch = st.selectbox("المنصة", ["Binance", "KuCoin", "MEXC", "Bybit"])
     with c2:
-        n_sym = st.slider("عدد العملات", 30, 200, 100, step=10)
+        n_sym = st.slider("عدد العملات", 30, 200, 80, step=10)
     with c3:
         min_score = st.slider("أقل Score", 60, 85, 68)
     with c4:
         side_filter = st.selectbox("الاتجاه", ["الكل", "LONG فقط", "SHORT فقط"])
 
     btc_bias = "NEUTRAL"
-    btc_df = get_klines("KuCoin", "XBTUSDTM", "1h", 80)
+    btc_df = get_klines("Binance", "BTCUSDT", "1h", 80)
+    if btc_df is None:
+        btc_df = get_klines("KuCoin", "XBTUSDTM", "1h", 80)
     if btc_df is not None:
         st_struct = detect_market_structure(btc_df)
         btc_bias = "UP" if st_struct["bias"] == "BULLISH" else ("DOWN" if st_struct["bias"] == "BEARISH" else "NEUTRAL")
@@ -759,7 +792,9 @@ if section.startswith("📡"):
 
     if st.button("🔍 امسح دلوقتي", type="primary", use_container_width=True):
         with st.spinner(f"جاري المسح على {exch}..."):
-            if exch == "KuCoin":
+            if exch == "Binance":
+                symbols = binance_futures_symbols(n_sym)
+            elif exch == "KuCoin":
                 symbols = kucoin_futures_symbols(n_sym)
             elif exch == "MEXC":
                 symbols = mexc_futures_symbols(n_sym)
@@ -772,11 +807,16 @@ if section.startswith("📡"):
 
             for i, sym in enumerate(symbols):
                 progress.progress((i + 1) / max(len(symbols), 1))
-                if any(x in sym for x in ["USDC", "DAI", "USDE"]):
+                if any(x in sym for x in ["USDC", "DAI", "USDE", "TUSD"]):
                     continue
 
-                display = sym.replace("USDTM", "/USDT").replace("_USDT", "/USDT")
-                if exch == "Bybit":
+                if exch == "Binance":
+                    display = sym.replace("USDT", "/USDT")
+                elif exch == "KuCoin":
+                    display = sym.replace("USDTM", "/USDT")
+                elif exch == "MEXC":
+                    display = sym.replace("_USDT", "/USDT")
+                else:
                     display = sym.replace("USDT", "/USDT")
 
                 try:
@@ -816,8 +856,7 @@ if section.startswith("📡"):
             "الاستوب": r["stop"],
             "TP1": r["tp1"],
             "TP2": r["tp2"],
-            "R:R": r["rr2"],
-            "أدوات": " | ".join(r["tools_used"][:3])
+            "R:R": r["rr2"]
         } for r in results])
         st.dataframe(df_show, use_container_width=True, hide_index=True)
 
@@ -826,11 +865,9 @@ if section.startswith("📡"):
                 st.markdown(f"""
                 **الدخول:** `{r['entry']:.6g}`  
                 **الاستوب:** `{r['stop']:.6g}`  
-                **TP1:** `{r['tp1']:.6g}` | **TP2:** `{r['tp2']:.6g}` | **TP3:** `{r['tp3']:.6g}`  
-                **R:R:** 1:{r['rr1']} / 1:{r['rr2']}
+                **TP1:** `{r['tp1']:.6g}` | **TP2:** `{r['tp2']:.6g}` | **TP3:** `{r['tp3']:.6g}`
                 """)
                 st.markdown("**الأدوات:** " + " • ".join(r["tools_used"]))
-                st.markdown("**الأسباب:**")
                 for reason in r["reasons"]:
                     st.markdown(f"- {reason}")
                 st.code(format_signal_message(r), language="text")
@@ -841,13 +878,18 @@ if section.startswith("📡"):
         if st.button("📩 إرسال أقوى 3 إشارات"):
             for r in results[:3]:
                 send_telegram(format_signal_message(r))
-                time.sleep(0.5)
+                time.sleep(0.6)
             st.success("تم إرسال أقوى 3 إشارات")
 
 elif section.startswith("📊"):
     st.subheader("📊 تحليل عملة واحدة")
-    exch2 = st.selectbox("المنصة", ["KuCoin", "MEXC", "Bybit"], key="ex2")
-    default_sym = "XBTUSDTM" if exch2 == "KuCoin" else ("BTC_USDT" if exch2 == "MEXC" else "BTCUSDT")
+    exch2 = st.selectbox("المنصة", ["Binance", "KuCoin", "MEXC", "Bybit"], key="ex2")
+    default_sym = {
+        "Binance": "BTCUSDT",
+        "KuCoin": "XBTUSDTM",
+        "MEXC": "BTC_USDT",
+        "Bybit": "BTCUSDT"
+    }.get(exch2, "BTCUSDT")
     sym_in = st.text_input("الرمز", default_sym).strip().upper()
 
     if st.button("تحليل"):
@@ -856,20 +898,11 @@ elif section.startswith("📊"):
             st.warning("مفيش إعداد عالي الجودة حاليًا على العملة دي")
         else:
             st.success(f"Score: {res['score']} | {res['type']}")
-            st.json({
-                "Entry": res["entry"],
-                "Stop": res["stop"],
-                "TP1": res["tp1"],
-                "TP2": res["tp2"],
-                "TP3": res["tp3"],
-                "Tools": res["tools_used"],
-                "Reasons": res["reasons"]
-            })
             st.code(format_signal_message(res), language="text")
 
 elif section.startswith("🧠"):
     st.subheader("🧠 Self-Learning System")
-    st.markdown("النظام بيسجل كل إشارة أوتوماتيك. لما تحدد نتيجة الصفقة البوت بيتعلم.")
+    st.markdown("النظام بيسجل كل إشارة أوتوماتيك.")
 
     with sqlite3.connect(DB_PATH) as c:
         total_logs = c.execute("SELECT COUNT(*) FROM learning_log").fetchone()[0]
@@ -884,7 +917,7 @@ elif section.startswith("🧠"):
     st.markdown("### تسجيل نتيجة صفقة")
     with sqlite3.connect(DB_PATH) as c:
         open_rows = c.execute("""
-            SELECT id, symbol, side, entry, stop, tp1, created_at
+            SELECT id, symbol, side, entry, created_at
             FROM signals WHERE outcome='OPEN' ORDER BY id DESC LIMIT 30
         """).fetchall()
 
@@ -900,17 +933,12 @@ elif section.startswith("🧠"):
                 c.execute("UPDATE signals SET outcome=?, pnl=? WHERE id=?", (outcome, pnl, sig_id))
                 row = c.execute("SELECT symbol, side, score FROM signals WHERE id=?", (sig_id,)).fetchone()
                 if row:
-                    log_for_learning(
-                        {"symbol": row[0], "type": row[1], "score": row[2], "features": {}},
-                        outcome=outcome,
-                        pnl=pnl
-                    )
+                    log_for_learning({"symbol": row[0], "type": row[1], "score": row[2], "features": {}}, outcome=outcome, pnl=pnl)
                 c.commit()
             st.success("تم تسجيل النتيجة")
     else:
         st.info("مفيش إشارات مفتوحة حاليًا")
 
-    st.markdown("---")
     if st.button("🔄 تحديث أوزان النموذج", type="primary"):
         ok, msg = auto_update_weights()
         st.success(msg) if ok else st.warning(msg)
@@ -940,13 +968,9 @@ elif section.startswith("💾"):
         if pt_entry > 0:
             with sqlite3.connect(DB_PATH) as c:
                 c.execute("""
-                    INSERT INTO paper_trades
-                    (created_at, symbol, side, entry, stop, tp1, tp2, tp3, size_usd)
+                    INSERT INTO paper_trades (created_at, symbol, side, entry, stop, tp1, tp2, tp3, size_usd)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    datetime.now(timezone.utc).isoformat(),
-                    pt_sym, pt_side, pt_entry, pt_stop, pt_tp1, pt_tp1, pt_tp1, pt_size
-                ))
+                """, (datetime.now(timezone.utc).isoformat(), pt_sym, pt_side, pt_entry, pt_stop, pt_tp1, pt_tp1, pt_tp1, pt_size))
                 c.commit()
             st.success("تم التسجيل")
 
@@ -958,7 +982,7 @@ elif section.startswith("💾"):
 elif section.startswith("📩"):
     st.subheader("📩 اختبار تليجرام")
     if st.button("إرسال رسالة تجريبية"):
-        ok, msg = send_telegram("💎 BLY7TRADER ELITE - Test Message ✅\nالبوت شغال.")
+        ok, msg = send_telegram("💎 BLY7TRADER ELITE - Test ✅\nالبوت شغال.")
         st.success(msg) if ok else st.error(msg)
 
     st.markdown("""
@@ -970,4 +994,4 @@ elif section.startswith("📩"):
     """)
 
 st.markdown("---")
-st.caption("BLY7TRADER ELITE • Structure Based • High Confluence • Self-Learning")
+st.caption("BLY7TRADER ELITE • Binance + KuCoin + MEXC + Bybit • Cornix Compatible")
