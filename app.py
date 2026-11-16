@@ -326,9 +326,13 @@ def analyze_symbol(exchange, symbol, display_name, btc_bias="NEUTRAL", weights=N
         risk = price - stop
         if risk <= 0:
             return None
-        tp1 = price + risk * 1.2; tp2 = structure["last_high"] if structure["last_high"] else price + risk * 2.1; tp3 = price + risk * 3.2
+        tp1 = price + risk * 1.2; tp2 = structure["last_high"] if (structure["last_high"] and structure["last_high"] > price) else price + risk * 2.1; tp3 = price + risk * 3.2
+        if tp2 <= price: tp2 = price + risk * 2.1
+        if tp3 <= tp2: tp3 = price + risk * 3.2
+        if tp1 <= price: tp1 = price + risk * 1.2
         if valid_fvg and valid_fvg["top"] > price:
             tp1 = min(tp1, valid_fvg["mid"])
+            if tp1 <= price: tp1 = price + risk * 1.2
     else:
         if valid_ob:
             stop = valid_ob["top"] + buffer
@@ -339,9 +343,13 @@ def analyze_symbol(exchange, symbol, display_name, btc_bias="NEUTRAL", weights=N
         risk = stop - price
         if risk <= 0:
             return None
-        tp1 = price - risk * 1.2; tp2 = structure["last_low"] if structure["last_low"] else price - risk * 2.1; tp3 = price - risk * 3.2
+        tp1 = price - risk * 1.2; tp2 = structure["last_low"] if (structure["last_low"] and structure["last_low"] < price) else price - risk * 2.1; tp3 = price - risk * 3.2
+        if tp2 >= price: tp2 = price - risk * 2.1
+        if tp3 >= tp2: tp3 = price - risk * 3.2
+        if tp1 >= price: tp1 = price - risk * 1.2
         if valid_fvg and valid_fvg["bottom"] < price:
             tp1 = max(tp1, valid_fvg["mid"])
+            if tp1 >= price: tp1 = price - risk * 1.2
     max_risk_pct = 0.035
     if side == "LONG" and (price - stop) / price > max_risk_pct:
         stop = price * (1 - max_risk_pct)
