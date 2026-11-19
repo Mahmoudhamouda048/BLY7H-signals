@@ -1,5 +1,5 @@
 # BLY7TRADER — V21 fixed interface / Futures intelligence
-# Run: pip install -r requirements.txt && streamlit run BLY7TRADER_V21.py
+# Run: pip install -r requirements.txt && streamlit run BLY7TRADER_V21_1.py
 # V21 fixes: added missing add_indicators/market_structure/get_real_cvd/get_futures_orderbook,
 # parallel scan (8 workers), cached learning_profile + BTC filter, min_score default 62,
 # removed dead spot helpers, stronger DEX scan (search + boosts).
@@ -26,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-APP_TITLE = "💎 BLY7TRADER — ULTIMATE V21 ✅ Fixed"
+APP_TITLE = "💎 BLY7TRADER — ULTIMATE V21.1 ✅ Fixed - Shows Closest Signals"
 DB_PATH = os.getenv("BLY7TRADER_DB", "bly7trader_memory.db")
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "BLY7TRADER/21.0"})
@@ -740,7 +740,9 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
         score = max(0, min(int(score) + learning["adjustment"], 98))
 
         if score < settings["min_score"]:
-            return None, f"السكور {score} أقل من المطلوب {settings['min_score']}"
+            # V21.1: return as weak candidate instead of dropping it, so UI can show closest signals
+            weak = {"symbol": symbol, "type": side, "score": score, "price": round(last, 8), "ch": round(change, 2), "vol": round(volume_ratio, 2), "buy": round(cvd_proxy, 1), "entry": round(last, 8), "stop": round(last, 8), "tp1": round(last, 8), "tp2": round(last, 8), "tp3": round(last, 8), "funding": funding, "oi_change": oi_change, "real_cvd": real_cvd, "rr_tp1": 0, "position_qty": 0, "position_notional": 0, "extra": f"إشارة ضعيفة - السكور {score} أقل من المطلوب {settings['min_score']}", "_weak": True}
+            return weak, f"السكور {score} أقل من المطلوب {settings['min_score']}"
 
         if side == "LONG":
             fvg_mid = bull_fvg[2] if bull_fvg else last * 0.997
@@ -895,7 +897,8 @@ with st.sidebar:
     killzone = st.checkbox("عرض نوافذ السيولة التقريبية", value=True)
     confirm_exchanges = st.checkbox("فحص توافر الرمز على 5 منصات Spot", value=False)
     st.markdown("### التصفية")
-    min_score = st.slider("أقل Score", 0, 95, 62)
+    min_score = st.slider("أقل Score", 0, 95, 30)
+    show_closest = st.checkbox("📌 لو مفيش إشارات، اعرض أقرب 10 إشارات", value=True)
     limit_coins = st.slider("عدد العملات للفحص", 10, 100, 40, step=5)
     timeframe = st.selectbox("الإطار الزمني للعقود", ["1m", "3m", "5m", "15m", "1h"], index=2)
     bars_limit = st.select_slider("عدد الشموع", options=[100, 250, 500, 1000], value=500)
@@ -922,6 +925,7 @@ settings = {
     "capital_usdt": capital_usdt, "risk_pct": risk_pct,
     "fee_pct": fee_pct, "slippage_pct": slippage_pct,
     "timeframe": timeframe,
+    "show_closest": show_closest,
 }
 
 
@@ -949,7 +953,7 @@ if section in ("🔎 الماسح", "📉 DUMP / SHORT"):
                           "MEXC": get_mexc_futures_symbols}
         symbols = symbol_sources[platform](limit_coins)
         st.info(f"تم العثور على {len(symbols)} رمزًا للفحص.")
-        signals, debug = [], []
+        signals, debug, weak_candidates = [], [], []
         progress = st.progress(0)
         status = st.empty()
         learning_obj = learning_profile()
@@ -978,7 +982,9 @@ if section in ("🔎 الماسح", "📉 DUMP / SHORT"):
                 progress.progress(done / max(len(symbols), 1))
                 status.caption(f"يفحص {futures[fut]} ({done}/{len(symbols)})")
                 sig, dbg = fut.result()
-                if sig:
+                if sig and sig.get("_weak"):
+                    weak_candidates.append(sig)
+                elif sig:
                     signals.append(sig)
                 elif dbg and len(debug) < 15:
                     debug.append(dbg)
@@ -988,8 +994,13 @@ if section in ("🔎 الماسح", "📉 DUMP / SHORT"):
         status.empty()
 
         signals.sort(key=lambda item: item["score"], reverse=True)
+        if not signals and weak_candidates and settings.get("show_closest", True):
+            weak_candidates.sort(key=lambda item: item["score"], reverse=True)
+            signals = weak_candidates[:10]
+            st.warning(f"⚠️ مفيش إشارة عدّت فلتر السكور ({min_score})، فعرضتلك أقرب {len(signals)} إشارة للسكور - السوق هادي دلوقتي. دي مش إشارات دخول قوية.")
+
         if signals:
-            save_signals(signals, platform)
+            save_signals([s for s in signals if not s.get("_weak")], platform)
             st.success(f"تم العثور على {len(signals)} إشارة مطابقة.")
             if telegram_enabled:
                 send_signal_batch(signals)
