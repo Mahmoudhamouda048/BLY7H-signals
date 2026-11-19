@@ -26,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-APP_TITLE = "💎 BLY7TRADER — ULTIMATE FINAL ✅ All Sections Fixed"
+APP_TITLE = "💎 BLY7TRADER — ULTIMATE V22 ✅ Guaranteed Signals - No Hard Filters"
 DB_PATH = os.getenv("BLY7TRADER_DB", "bly7trader_memory.db")
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "BLY7TRADER/21.0"})
@@ -674,8 +674,9 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
 
         frame = add_indicators(frame)
         change = (last - previous) / previous * 100
+        change_penalty = 0
         if abs(change) > 8:
-            return None, f"حركة الشمعة الأخيرة ({settings.get('timeframe','1h')}): {change:.2f}%"
+            change_penalty = -20  # soft: penalize, don't drop
 
         average_volume = safe_float(frame["vol"].iloc[-21:-1].mean())
         current_volume = safe_float(frame["vol"].iloc[-1])
@@ -685,7 +686,7 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
         real_cvd = get_real_cvd(exchange, symbol)
         cvd_value = real_cvd if real_cvd is not None else cvd_proxy
         if abs(cvd_value) < 3:
-            return None, f"ضغط الشموع ضعيف: {cvd_proxy:.1f}%"
+            pass  # V22 soft: weak CVD = low score, not dropped
 
         side = "LONG" if cvd_value > 0 else "SHORT"
         if side == "LONG" and not settings["want_long"]:
@@ -698,30 +699,35 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
             source = {"KUCOIN":get_kucoin_futures_klines,"BINANCE":get_binance_futures_klines,
                       "BYBIT":get_bybit_futures_klines,"MEXC":get_mexc_futures_klines}[exchange]
             higher = source(symbol, higher_tf, 120)
-            if higher is None or len(higher) < 30: return None, "بيانات MTF غير متاحة"
+            if higher is None or len(higher) < 30:
+                mtf_note = "MTF غير متاح"
+                higher = None
             higher = add_indicators(higher)
-            aligned = safe_float(higher["ema9"].iloc[-1]) > safe_float(higher["ema21"].iloc[-1]) if side == "LONG" else safe_float(higher["ema9"].iloc[-1]) < safe_float(higher["ema21"].iloc[-1])
-            if not aligned: return None, f"اتجاه {higher_tf} غير مؤكد مع {side}"
-            mtf_note = f"MTF مؤكد على {higher_tf}"
+            aligned = True
+            if higher is not None:
+                aligned = safe_float(higher["ema9"].iloc[-1]) > safe_float(higher["ema21"].iloc[-1]) if side == "LONG" else safe_float(higher["ema9"].iloc[-1]) < safe_float(higher["ema21"].iloc[-1])
+                mtf_note = f"MTF مؤكد على {higher_tf}" if aligned else f"MTF عكس {side} (-10)"
+            if not aligned:
+                change_penalty -= 10
 
         btc_change = btc_cached if settings["btc_filter"] else None
         if settings["btc_filter"] and btc_change is not None:
             if side == "LONG" and btc_change < -2:
-                return None, f"فلتر BTC: هبوط {btc_change:.2f}%"
+                change_penalty -= 10
             if side == "SHORT" and btc_change > 2:
-                return None, f"فلتر BTC: صعود {btc_change:.2f}%"
+                change_penalty -= 10
 
         bull_fvg, bear_fvg = find_recent_fvg(frame)
         if settings["use_fvg"] and not (bull_fvg or bear_fvg):
-            return None, "لا توجد فجوة FVG حديثة"
+            change_penalty -= 8
 
         in_kz, kz_label = killzone_status()
         funding, oi_change = get_futures_funding_oi(exchange, symbol)
         if settings["funding_filter"] and funding is not None:
             if side == "LONG" and funding > 0.05:
-                return None, f"فاندنج مرتفع ضد LONG: {funding:.4f}%"
+                change_penalty -= 8
             if side == "SHORT" and funding < -0.05:
-                return None, f"فاندنج سالب ضد SHORT: {funding:.4f}%"
+                change_penalty -= 8
 
         structure = market_structure(frame)
         ema_bull = safe_float(frame["ema9"].iloc[-1]) > safe_float(frame["ema21"].iloc[-1])
@@ -743,7 +749,7 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
         score += 8 if ((side == "LONG" and bull_fvg) or (side == "SHORT" and bear_fvg)) else 0
         score += 5 if in_kz else 0
         learning = learning_obj if learning_obj is not None else learning_profile()
-        score = max(0, min(int(score) + learning["adjustment"], 98))
+        score = max(5, min(int(score) + learning["adjustment"] + change_penalty, 98))
 
         if score < settings["min_score"]:
             # V21.1: return as weak candidate instead of dropping it, so UI can show closest signals
@@ -909,7 +915,7 @@ with st.sidebar:
     killzone = st.checkbox("عرض نوافذ السيولة التقريبية", value=True)
     confirm_exchanges = st.checkbox("فحص توافر الرمز على 5 منصات Spot", value=False)
     st.markdown("### التصفية")
-    min_score = st.slider("أقل Score", 0, 95, 30)
+    min_score = st.slider("أقل Score", 0, 95, 0)  # V22: 0 = اعرض كل حاجة مرتبة بالسكور
     show_closest = st.checkbox("📌 لو مفيش إشارات، اعرض أقرب 10 إشارات", value=True)
     limit_coins = st.slider("عدد العملات للفحص", 10, 100, 40, step=5)
     timeframe = st.selectbox("الإطار الزمني للعقود", ["1m", "3m", "5m", "15m", "1h"], index=2)
@@ -1031,6 +1037,10 @@ if section in ("🔎 الماسح", "📉 DUMP / SHORT"):
         status.empty()
 
         signals.sort(key=lambda item: item["score"], reverse=True)
+        # V22 guarantee: sort ALL signals, show top 10 even if below min_score
+        signals.sort(key=lambda item: item["score"], reverse=True)
+        if signals and signals[0]["score"] < settings.get("min_score", 30):
+            st.warning(f"⚠️ السوق هادي - أعلى سكور هو {signals[0]['score']} وأقل من فلترك ({settings.get('min_score',30)}). عرضت أقوى الإشارات المتاحة، ودي مش إشارات دخول قوية.")
         if not signals and weak_candidates and settings.get("show_closest", True):
             weak_candidates.sort(key=lambda item: item["score"], reverse=True)
             signals = weak_candidates[:10]
