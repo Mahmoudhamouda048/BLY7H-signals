@@ -26,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-APP_TITLE = "💎 BLY7TRADER — ULTIMATE V21.1 ✅ Fixed - Shows Closest Signals"
+APP_TITLE = "💎 BLY7TRADER — ULTIMATE FINAL ✅ All Sections Fixed"
 DB_PATH = os.getenv("BLY7TRADER_DB", "bly7trader_memory.db")
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "BLY7TRADER/21.0"})
@@ -260,12 +260,18 @@ def load_signal_history(limit=100):
         )
 
 
+def _secret(name, default=""):
+    try:
+        v = st.secrets.get(name, "")
+        if v:
+            return v
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
 def send_telegram(message):
-    token = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
-    chat_id = st.secrets.get(
-        "TELEGRAM_CHANNEL_ID",
-        st.secrets.get("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", "")),
-    )
+    token = _secret("TELEGRAM_BOT_TOKEN", "")
+    chat_id = _secret("TELEGRAM_CHANNEL_ID", "") or _secret("TELEGRAM_CHAT_ID", "")
     if not token:
         return False, "أضف TELEGRAM_BOT_TOKEN داخل Streamlit Secrets"
     if not chat_id:
@@ -314,8 +320,8 @@ def send_signal_batch(signals):
         time.sleep(0.4)
     if sent:
         st.success(f"📡 تم إرسال {sent} إشارة إلى تليجرام")
-    if errors and not sent:
-        st.error(f"تعذر الإرسال: {errors[-1]}")
+    if errors:
+        st.error(f"تعذر إرسال بعض الإشارات: {errors[-1]}")
 
 
 # ----------------------------- Market data -----------------------------
@@ -871,7 +877,10 @@ def scan_dex():
 
 # ----------------------------- Sidebar -----------------------------
 
-init_db()
+try:
+    init_db()
+except Exception as _db_exc:
+    st.warning(f"تحذير قاعدة البيانات: {_db_exc}")
 
 # Periodic reruns keep the automatic outcome monitor active while the app is open.
 try:
@@ -880,7 +889,10 @@ try:
 except ImportError:
     pass
 
-monitor_status = auto_monitor_open_trades()
+try:
+    monitor_status = auto_monitor_open_trades()
+except Exception as _mon_exc:
+    monitor_status = {"checked": 0, "resolved": [], "error": str(_mon_exc)}
 
 with st.sidebar:
     st.markdown("## 🎛️ إعدادات الماسح")
@@ -907,9 +919,34 @@ with st.sidebar:
     fee_pct = st.number_input("رسوم تقديرية للدخول والخروج %", min_value=0.0, max_value=2.0, value=0.10, step=0.01)
     slippage_pct = st.number_input("انزلاق تقديري %", min_value=0.0, max_value=2.0, value=0.05, step=0.01)
     telegram_enabled = st.checkbox("إرسال أفضل الإشارات إلى Telegram", value=False)
+    # V21.2: Telegram diagnostics - always visible, never silent fail
+    _tok = _secret("TELEGRAM_BOT_TOKEN", "")
+    _chat = ""
+    try:
+        _chat = st.secrets.get("TELEGRAM_CHANNEL_ID", "") or st.secrets.get("TELEGRAM_CHAT_ID", "")
+    except Exception:
+        _chat = ""
+    import os as _os
+    if not _tok:
+        _tok = _os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not _chat:
+        _chat = _os.getenv("TELEGRAM_CHAT_ID", "")
+    if _tok and _chat:
+        st.success("✅ Telegram متوصل: التوكن + الشات موجودين")
+    else:
+        st.error("❌ Telegram مش هيشتغل: ناقص " + ("التوكن " if not _tok else "") + ("الشات " if not _chat else ""))
+        st.caption("روح Streamlit > Settings > Secrets وحط:\nTELEGRAM_BOT_TOKEN = \"توكن البوت\"\nTELEGRAM_CHANNEL_ID = \"@قناتك أو رقم الشات\"")
     if st.button("📡 اختبار Telegram"):
         ok, message = send_telegram("🧪 اختبار BLY7TRADER — اتصال Telegram يعمل.")
         st.success(message) if ok else st.error(message)
+    # V21.2: Learning diagnostics
+    try:
+        _prof = learning_profile()
+        st.caption(f"🧠 التعلم: {_prof['trades']} صفقة محسومة | Win Rate {_prof['win_rate']:.1f}% | تعديل {_prof['adjustment']:+d}")
+        if _prof["trades"] < 10:
+            st.caption(f"⚠️ التعلم لسه مش متفعل - محتاج {10 - _prof['trades']} صفقات محسومة كمان عشان يبدأ يعدّل السكور")
+    except Exception as _e:
+        st.caption(f"تعذر قراءة التعلم: {_e}")
 
 settings = {
     "want_long": want_long,
