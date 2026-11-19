@@ -26,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-APP_TITLE = "💎 BLY7TRADER — ULTIMATE V22 ✅ Guaranteed Signals - No Hard Filters"
+APP_TITLE = "💎 BLY7TRADER — ULTIMATE V22.1 ✅ Stop/TP Fixed From Entry"
 DB_PATH = os.getenv("BLY7TRADER_DB", "bly7trader_memory.db")
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "BLY7TRADER/21.0"})
@@ -756,18 +756,27 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
             weak = {"symbol": symbol, "type": side, "score": score, "price": round(last, 8), "ch": round(change, 2), "vol": round(volume_ratio, 2), "buy": round(cvd_proxy, 1), "entry": round(last, 8), "stop": round(last, 8), "tp1": round(last, 8), "tp2": round(last, 8), "tp3": round(last, 8), "funding": funding, "oi_change": oi_change, "real_cvd": real_cvd, "rr_tp1": 0, "position_qty": 0, "position_notional": 0, "extra": f"إشارة ضعيفة - السكور {score} أقل من المطلوب {settings['min_score']}", "_weak": True}
             return weak, f"السكور {score} أقل من المطلوب {settings['min_score']}"
 
+        # V22.1 FIX: Stop/TP must be calculated FROM ENTRY, never from last price.
+        # Old bug: stop = last - risk while entry = FVG mid -> stop could end up ABOVE entry on LONG.
         if side == "LONG":
             fvg_mid = bull_fvg[2] if bull_fvg else last * 0.997
             entry = clamp_entry(fvg_mid, last, True)
-            risk = max(atr * 1.5, last * 0.006)
-            stop = last - risk
-            tp1, tp2 = last + risk * 1.5, last + risk * 2.5
+            risk = max(atr * 1.5, entry * 0.006)
+            stop = entry - risk
+            tp1, tp2 = entry + risk * 1.5, entry + risk * 2.5
+            tp3_fix = entry + risk * 3.5
         else:
             fvg_mid = bear_fvg[2] if bear_fvg else last * 1.003
             entry = clamp_entry(fvg_mid, last, False)
-            risk = max(atr * 1.5, last * 0.006)
-            stop = last + risk
-            tp1, tp2 = last - risk * 1.5, last - risk * 2.5
+            risk = max(atr * 1.5, entry * 0.006)
+            stop = entry + risk
+            tp1, tp2 = entry - risk * 1.5, entry - risk * 2.5
+            tp3_fix = entry - risk * 3.5
+        # Safety assert: if still inverted (should never happen), fall back to price-based levels
+        if side == "LONG" and not (stop < entry < tp1 < tp2):
+            entry, stop, tp1, tp2, tp3_fix = last, last - risk, last + risk * 1.5, last + risk * 2.5, last + risk * 3.5
+        if side == "SHORT" and not (stop > entry > tp1 > tp2):
+            entry, stop, tp1, tp2, tp3_fix = last, last + risk, last - risk * 1.5, last - risk * 2.5, last - risk * 3.5
 
         notes = [
             f"📊 CVD: {cvd_value:+.1f}% ({'تدفق صفقات حقيقي' if real_cvd is not None else 'Proxy من اتجاه الشموع؛ ليس CVD حقيقيًا'})",
@@ -816,7 +825,7 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
         effective_risk_per_unit = stop_distance + entry * estimated_cost_pct / 100
         position_qty = risk_cash / effective_risk_per_unit if effective_risk_per_unit > 0 else 0
         position_notional = position_qty * entry
-        risk_pct = abs(stop - last) / last * 100
+        risk_pct = abs(stop - entry) / entry * 100 if entry else 0
         notes.append(f"🎯 مسافة وقف الخسارة: {risk_pct:.2f}% من السعر | R:R TP1 {abs(tp1-entry)/max(stop_distance,1e-12):.2f}")
         notes.append(f"📏 حجم المركز النظري: {position_qty:.6g} وحدة | القيمة {position_notional:.2f} USDT | مخاطرة {risk_cash:.2f} USDT")
         notes.append(f"🧾 تكلفة تقديرية رسوم+انزلاق: {estimated_cost_pct:.2f}%")
@@ -834,7 +843,7 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
             "stop": round(stop, 8),
             "tp1": round(tp1, 8),
             "tp2": round(tp2, 8),
-            "tp3": round((last + risk * 3.5) if side == "LONG" else (last - risk * 3.5), 8),
+            "tp3": round(tp3_fix, 8),
             "funding": funding, "oi_change": oi_change, "real_cvd": real_cvd,
             "rr_tp1": round(abs(tp1-entry)/max(abs(entry-stop), 1e-12), 2),
             "position_qty": round(position_qty, 8), "position_notional": round(position_notional, 2),
