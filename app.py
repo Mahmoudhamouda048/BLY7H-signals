@@ -2183,4 +2183,593 @@ def pm_resolve_open():
     t = frame["time"].to_numpy(float)
     ticks = st.session_state.get("pm_ticks", [])
     done = 0
-    for sid, H, ws, start, side, pu, pd_, p_up, feats, lead_js
+    for sid, H, ws, start, side, pu, pd_, p_up, feats, lead_js in due:
+        end_t = ws + H * 60
+        pts = [p for ts, p in ticks if end_t - 60 <= ts <= end_t]
+        if len(pts) >= 8:
+            settle = float(np.mean(pts))  # متوسط Ticks حقيقية جمعها التطبيق في آخر دقيقة
+        else:
+            idx = np.where(np.abs(t - (ws + (H - 1) * 60)) < 1)[0]
+            if len(idx) == 0:
+                if now - ws > 7200:
+                    with db() as conn:
+                        conn.execute("UPDATE pm_predictions SET outcome='EXPIRED' WHERE id=?", (sid,))
+                continue
+            k = idx[0]
+            settle = float((frame["open"].iloc[k] + frame["high"].iloc[k] + frame["low"].iloc[k] + frame["close"].iloc[k]) / 4)
+        up = settle > start  # المساواة = Down
+        model_correct = int((p_up > 0.5) == up)
+        correct = int((side == "UP") == up) if side != "SKIP" else None
+        pnl = ((pu if side == "UP" else pd_) if correct else -1.0) if side != "SKIP" else 0.0
+        y = 1.0 if up else 0.0
+        xv = np.array(json.loads(feats), dtype=float)
+        w, n_upd = pm_load(H)
+        if lead_js:  # تعلّم أوزان المؤشرات القائدة
+            try:
+                ld = json.loads(lead_js)
+                Lv, mult = np.array(ld["L"], dtype=float), float(ld.get("mult", 1.0))
+                wl, nl = pm_load_vec(100 + H, LEAD_PRIOR)
+                p_l = float(_sig(float(xv @ w) + float((Lv * wl).sum() * mult)))
+                wl = wl - 0.05 * ((p_l - y) * Lv * mult + 0.01 * (wl - LEAD_PRIOR))
+                pm_save_vec(100 + H, np.clip(wl, -0.3, 2.0), nl + 1)
+            except Exception:
+                pass
+        w = pm_online_step(w, xv, y)
+        pm_save(H, w, n_upd + 1)
+        with db() as conn:
+            conn.execute("UPDATE pm_predictions SET outcome=?,end_price=?,correct=?,model_correct=?,pnl=? WHERE id=?",
+                         ("UP" if up else "DOWN", settle, correct, model_correct, pnl, sid))
+        done += 1
+    return done
+
+
+def render_pm_section(tg_enabled):
+    st.subheader("🎯 MEXC Up/Down — BTC")
+    st.caption("Up يكسب لو سعر التسوية > Baseline، والتساوي = Down. التسوية = متوسط Index آخر دقيقة. "
+               "مفيش توقع 100% — النظام بيدخل بس لما فيه ميزة (EV) فوق التعادل وبيقيس دقته الحقيقية.")
+    with st.expander("⚙️ الإعدادات", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        pm_h = 5 if c1.selectbox("الدورة", ["5 دقائق", "15 دقيقة"]) == "5 دقائق" else 15
+        pm_pu = c2.number_input("Payout لـ Up (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
+        pm_pd = c3.number_input("Payout لـ Down (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
+        c4, c5, c6 = st.columns(3)
+        pm_edge = c4.slider("أقل ميزة EV للدخول", 0.0, 0.5, 0.08, 0.01)
+        pm_conf = c5.slider("أقل ثقة", 0.50, 0.95, 0.62, 0.01)
+        pm_off = c6.number_input("إزاحة بداية الدورة (دقائق)", min_value=0, max_value=14, value=0, step=1)
+        c7, c8, c9 = st.columns(3)
+        pm_cut = c7.number_input("قفل الدخول قبل النهاية (ثواني)", min_value=0, max_value=120, value=15, step=5)
+        pm_live_on = c8.checkbox("⚡ تحديث لحظي كل ثانيتين", value=True, key="pm_live_on")
+        pm_auto = c9.checkbox("تسجيل تلقائي لأول إشارة في كل دورة", value=True)
+        c10, c11, c12 = st.columns(3)
+        use_lead = c10.checkbox("🧭 استخدم المؤشرات القائدة", value=True)
+        lead_mult = c11.slider("قوة المؤشرات القائدة", 0.0, 2.0, 1.0, 0.1)
+        require_agree = c12.checkbox("امنع الدخول عند التعارض معاها", value=True)
+        pm_tg = st.checkbox("📡 أرسل إشارة الدخول إلى Telegram", value=False)
+    st.caption(f"نقطة التعادل: Up ≥ {1 / (1 + pm_pu):.1%} | Down ≥ {1 / (1 + pm_pd):.1%} احتمال صح.")
+
+    b1, b2 = st.columns([3, 1])
+    base_in = b1.number_input("Baseline (To Beat) من شاشة MEXC للدورة الحالية", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+    b2.write("")
+    if b2.button("📌 ثبّت للدورة الحالية"):
+        st.session_state["pm_base_manual"] = (pm_window_start(pm_h, pm_off), base_in)
+        st.toast("تم تثبيت Baseline للدورة الحالية فقط")
+
+    _now_pm = time.time()
+    if _now_pm - st.session_state.get("pm_resolve_ts", 0) > 15:
+        st.session_state["pm_resolve_ts"] = _now_pm
+        try:
+            if pm_resolve_open():
+                st.toast("اتحسمت توقعات وتم تحديث النموذج")
+        except Exception as exc:
+            st.caption(f"تعذر حسم التوقعات: {exc}")
+
+    manual_click = (not pm_live_on) and st.button("🎯 توقّع الآن", type="primary")
+    live = None
+    if pm_live_on or manual_click:
+        opts = {"use_lead": use_lead, "lead_mult": lead_mult, "require_agree": require_agree, "max_latency": 2.5}
+        live = pm_live_state(pm_h, pm_off, pm_pu, pm_pd, pm_edge, pm_conf, pm_cut, pm_auto, opts)
+
+    tab_live, tab_lead, tab_train, tab_log = st.tabs(["⚡ لحظي", "🧭 المؤشرات القائدة", "🧠 التدريب والتقييم", "📒 السجل والأداء"])
+
+    with tab_live:
+        if live is None:
+            st.info("فعّل التحديث اللحظي من الإعدادات أو اضغط «توقّع الآن».")
+        elif live.get("error"):
+            st.error(live["error"])
+        else:
+            if live["closed"]:
+                label, tone = "🔒 الدخول مقفول", "neutral"
+            else:
+                label, tone = {"UP": ("🟢 UP", "up"), "DOWN": ("🔴 DOWN", "down"), "SKIP": ("⏸️ تجاهل", "neutral")}[live["side"]]
+            sub = f"{live['now']} | باقي {live['remaining']:.0f}ث (تنتهي {live['ends_at']})"
+            if live["gate"]:
+                sub += f" | سبب التجاهل: {live['gate']}"
+            decision_card(label, tone, sub, [
+                ("احتمال Up", f"{live['p_up']:.1%}"),
+                ("الثقة", f"{live['conf']:.1%}"),
+                ("EV لكل 1$", f"{live['ev']:+.3f}"),
+                ("نسبة دخول مقترحة", f"{live['stake'] * 100:.1f}%" if live["side"] != "SKIP" else "—"),
+            ])
+            st.progress(float(max(0.0, min(1.0, live["remaining"] / (live["H"] * 60)))))
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Index الآن", f"{live['px']:,.2f}", f"{live['px'] - live['base']:+,.2f} عن Baseline")
+            m2.metric("Baseline", f"{live['base']:,.2f}")
+            m3.metric("z (البعد عن Baseline)", f"{live['z']:+.2f}")
+            m4.metric("احتمال بدون القائدة", f"{live['p_base']:.1%}")
+            st.caption(f"Baseline: {live['base_src']} | المصدر: {live['src']} ({live['latency'] * 1000:.0f}ms) | "
+                       f"تحديثات تعلّم: {live['n_updates']} | Ticks: {live['n_ticks']}")
+            if live["running_avg"] is not None:
+                st.caption(f"آخر دقيقة: متوسط Index حتى الآن {live['running_avg']:,.2f} → السعر الفعّال في الحساب {live['eff_px']:,.2f} "
+                           "(جزء من التسوية اتحدد فعلًا).")
+            if live["logged"]:
+                st.success("📝 اتسجلت إشارة للدورة دي.")
+                if pm_tg:
+                    sent_w = st.session_state.setdefault("pm_tg_sent", set())
+                    if live["window_start"] not in sent_w:
+                        ok, msg = send_telegram(
+                            f"🎯 MEXC {live['H']}m — {'UP 🟢' if live['side'] == 'UP' else 'DOWN 🔴'}\n"
+                            f"احتمال Up: {live['p_up']:.1%} | ثقة {live['conf']:.1%} | EV {live['ev']:+.3f}\n"
+                            f"Index: {live['px']:,.2f} | Baseline: {live['base']:,.2f}\n⚠️ تنبيه بحثي\n@WHYNOTBLY7")
+                        if ok:
+                            sent_w.add(live["window_start"])
+            if live["side"] == "SKIP" and not live["closed"] and not live["gate"]:
+                st.info("مفيش ميزة كفاية دلوقتي. التجاهل قرار صح كتير.")
+            if len(live["chart"]) >= 2:
+                chart_df = pd.DataFrame(live["chart"], columns=["t", "السعر"]).set_index("t")
+                chart_df["Baseline"] = live["base"]
+                st.line_chart(chart_df)
+            st.caption("⚠️ تأكد إن الـ Payout وBaseline اللي على شاشتك هما اللي كاتبهم هنا، وإن المنصة لسه بتقبل الدخول.")
+
+    with tab_lead:
+        if live is None or live.get("error"):
+            st.info("شغّل التحديث اللحظي أولًا.")
+        elif not live.get("lead"):
+            st.info("المؤشرات القائدة متوقفة من الإعدادات.")
+        else:
+            ld = live["lead"]
+            if ld["n"] == 0:
+                st.error("مفيش ولا بورصة رجّعت بيانات (غالبًا Binance/Bybit/OKX محجوبين من السيرفر). جرّب تشغيل التطبيق من سيرفر مختلف.")
+            else:
+                bias = float(np.tanh(ld["adj"]))
+                vtone = "up" if bias > 0.12 else "down" if bias < -0.12 else "neutral"
+                vtxt = "🟢 القائدة تميل Up" if bias > 0.12 else "🔴 القائدة تميل Down" if bias < -0.12 else "⚪ القائدة محايدة"
+                st.markdown(badge(vtxt, vtone) + badge(f"{ld['n']} بورصات متصلة", "info")
+                            + badge(f"سرعة الجلب {ld['lat'] * 1000:.0f}ms", "neutral")
+                            + badge(f"تحديثات تعلّم الأوزان: {ld['n_updates']}", "neutral"), unsafe_allow_html=True)
+                if ld["calibrating"]:
+                    st.warning(f"⏳ جاري معايرة خط أساس فرق السعر ({ld['cal_have']}/20 عينة). مؤشر الفرق والزخم هيشتغلوا بعد حوالي دقيقة من فتح الصفحة.")
+                notes = [
+                    "اختلال الأوامر (Binance/Bybit/OKX) بوزن أقرب المستويات",
+                    "Taker buy/sell آخر 20ث و90ث",
+                    "الفرق عن خط الأساس (آخر 15 دقيقة) بالـ bps",
+                    "تغير متوسط أسعار البورصات خلال 10ث",
+                ]
+                for k, (lab, v) in enumerate(zip(LEAD_LABELS, ld["L"])):
+                    gauge(lab, v, f"{v:+.2f} × وزن {ld['w'][k]:.2f}", notes[k])
+                st.markdown("**تفاصيل كل بورصة**")
+                show_df(pd.DataFrame(ld["rows"]))
+                st.caption("الأوزان بتتعلم تلقائيًا من نتايج الإشارات المسجلة. فرق السعر محسوب بعد إزالة الـ Basis الثابت "
+                           "(USDT/USD وعلاوة العقود)، فبيقيس الانحراف غير الطبيعي بس. Coinbase بيدخل في الفرق والزخم فقط.")
+
+    with tab_train:
+        if st.button("🧠 درّب وقيّم النموذج"):
+            with st.spinner("بيجلب البيانات ويشغّل اختبار Walk-forward..."):
+                frame, src = get_pm_frame()
+                if frame is None:
+                    st.session_state["pm_eval"] = {"error": src}
+                else:
+                    X, y, E, W = pm_build_dataset(frame, pm_h, pm_off)
+                    if len(y) < 200:
+                        st.session_state["pm_eval"] = {"error": "بيانات قليلة للتدريب."}
+                    else:
+                        ev_res = pm_evaluate(X, y, E, W, (pm_pu + pm_pd) / 2, pm_edge, pm_conf)
+                        w_all = pm_fit(X, y)
+                        _, n_old = pm_load(pm_h)
+                        pm_save(pm_h, w_all, n_old)
+                        st.session_state["pm_eval"] = {"eval": ev_res, "src": src, "n": len(y), "w": w_all}
+        pe = st.session_state.get("pm_eval")
+        if pe:
+            if pe.get("error"):
+                st.error(pe["error"])
+            elif pe.get("eval") is None:
+                st.info("عينات الاختبار قليلة؛ زوّد البيانات.")
+            else:
+                r = pe["eval"]
+                st.caption(f"المصدر: {pe['src']} | عينات: {pe['n']} (تدريب {r['n_train']} / اختبار {r['n_test']}) | نسبة Up في الاختبار {r['base_up']:.1%}")
+                show_df(pd.DataFrame([{"النموذج": k, "الدقة": f"{v['accuracy']:.1%}", "Brier (أقل أحسن)": round(v["brier"], 4),
+                                       "صفقات": v["bets"], "فوز الصفقات": f"{v['bet_win_rate']:.1%}",
+                                       "ربح/صفقة": round(v["pnl_per_bet"], 3), "إجمالي": round(v["pnl_total"], 2)}
+                                      for k, v in r["metrics"].items()]))
+                st.write("**الدقة حسب الثقة (اختبار خارج العينة)**")
+                show_df(pd.DataFrame(r["calibration"]))
+                st.write("**الدقة حسب الدقيقة داخل الدورة**")
+                show_df(pd.DataFrame(r["by_elapsed"]))
+                st.write("أوزان النموذج: " + " | ".join(f"{n}={v:+.2f}" for n, v in zip(PM_NAMES, pe["w"])))
+                st.caption("التدريب التاريخي بيغطي الميزات السعرية بس (المؤشرات القائدة مفيش لها تاريخ مجاني) — هي بتتعلم من السجل الحي. "
+                           "الباكتست بيفترض Payout ثابت؛ القياس الحقيقي هو السجل الحي.")
+        else:
+            st.info("اضغط الزر لتدريب وتقييم النموذج على بيانات الدقيقة التاريخية.")
+
+    with tab_log:
+        with db() as conn:
+            log = pd.read_sql_query("SELECT id,created_at,horizon,decision_min,start_price,p_up,side,ev,outcome,end_price,correct,model_correct,pnl "
+                                    "FROM pm_predictions ORDER BY id DESC LIMIT 300", conn)
+        if log.empty:
+            st.info("لسه مفيش توقعات مسجلة. فعّل التحديث اللحظي وسيب التطبيق مفتوح.")
+        else:
+            done_log = log[log.outcome.isin(["UP", "DOWN"])]
+            bets_log = done_log[done_log.side != "SKIP"]
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("توقعات محسومة", len(done_log))
+            a2.metric("دقة النموذج", f"{done_log['model_correct'].mean():.1%}" if len(done_log) else "—")
+            a3.metric("فوز الصفقات", f"{bets_log['correct'].mean():.1%}" if len(bets_log) else "—")
+            a4.metric("ربح Paper (وحدات)", f"{done_log['pnl'].sum():+.2f}")
+            if len(done_log) >= 2:
+                st.line_chart(done_log.sort_values("id")["pnl"].cumsum().reset_index(drop=True))
+            st.caption("النتيجة بتتحسب من Ticks حقيقية جمعها التطبيق في آخر دقيقة (لو كان مفتوح)، وإلا من شمعة آخر دقيقة كتقدير. قارنها بسجل MEXC عندك.")
+            show_df(log)
+
+
+# ============================ Init ============================
+
+try:
+    init_db()
+    pm_init()
+    radar_init()
+except Exception as _db_exc:
+    st.warning(f"تحذير قاعدة البيانات: {_db_exc}")
+
+monitor_status = get_monitor_status()
+
+# ============================ Sidebar ============================
+
+with st.sidebar:
+    st.markdown("## 🎛️ إعدادات الماسح")
+    platform = st.selectbox("منصة العقود الآجلة", ["KUCOIN", "BINANCE", "BYBIT", "MEXC"])
+    st.caption("لو Binance/Bybit مش بيجيبوا بيانات: سيرفرك غالبًا محجوب جغرافيًا، جرّب KUCOIN أو MEXC.")
+    st.markdown("### اتجاه الصفقة")
+    want_long = st.checkbox("🚀 LONG", value=True)
+    want_short = st.checkbox("📉 SHORT", value=True)
+    st.markdown("### الفلاتر")
+    use_fvg = st.checkbox("FVG (خصم 8 لو مفيش)", value=False)
+    mtf_filter = st.checkbox("تأكيد الاتجاه متعدد الأطر (MTF)", value=False)
+    btc_filter = st.checkbox("فلتر اتجاه BTC", value=True)
+    funding_filter = st.checkbox("فلتر Funding Futures", value=False)
+    wall_filter = st.checkbox("دفتر أوامر Futures (حسب المنصة)", value=False)
+    killzone = st.checkbox("نوافذ السيولة التقريبية (+5)", value=True)
+    confirm_exchanges = st.checkbox("فحص توافر الرمز على 5 منصات Spot", value=False)
+    st.markdown("### التصفية")
+    min_score = st.slider("أقل Score", 0, 95, 60)
+    show_closest = st.checkbox("📌 لو مفيش إشارات، اعرض أقرب 10", value=True)
+    limit_coins = st.slider("عدد العملات للفحص", 10, 100, 40, step=5)
+    timeframe = st.selectbox("الإطار الزمني", ["1m", "3m", "5m", "15m", "1h"], index=2)
+    bars_limit = st.select_slider("عدد الشموع", options=[100, 250, 500, 1000], value=500)
+    st.markdown("### إدارة المخاطر")
+    capital_usdt = st.number_input("رأس المال USDT", min_value=10.0, value=100.0, step=10.0)
+    risk_pct = st.number_input("المخاطرة لكل صفقة %", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
+    fee_pct = st.number_input("رسوم تقديرية دخول+خروج %", min_value=0.0, max_value=2.0, value=0.10, step=0.01)
+    slippage_pct = st.number_input("انزلاق تقديري %", min_value=0.0, max_value=2.0, value=0.05, step=0.01)
+    st.markdown("### Telegram")
+    telegram_enabled = st.checkbox("إرسال تلقائي بعد كل فحص", value=False)
+    tg_min_score = st.slider("أقل Score للإرسال", 50, 95, 70)
+    _tok = _secret("TELEGRAM_BOT_TOKEN")
+    _chat = _secret("TELEGRAM_CHANNEL_ID") or _secret("TELEGRAM_CHAT_ID")
+    if _tok and _chat:
+        st.success("✅ Telegram متوصل")
+    else:
+        st.error("❌ Telegram ناقص: " + ("التوكن " if not _tok else "") + ("الشات " if not _chat else ""))
+        st.caption('Settings > Secrets:\nTELEGRAM_BOT_TOKEN = "..."\nTELEGRAM_CHANNEL_ID = "@channel"')
+    if st.button("📡 اختبار Telegram"):
+        ok, message = send_telegram("🧪 اختبار BLY7TRADER — الاتصال يعمل.")
+        st.success(message) if ok else st.error(message)
+    try:
+        _prof = learning_profile()
+        st.caption(f"🧠 {_prof['trades']} صفقة محسومة | Win Rate {_prof['win_rate']:.1f}% | تعديل {_prof['adjustment']:+d}")
+        if _prof["trades"] < 10:
+            st.caption(f"التعلم يبدأ بعد {10 - _prof['trades']} صفقات محسومة كمان.")
+    except Exception as _e:
+        st.caption(f"تعذر قراءة التعلم: {_e}")
+
+settings = {
+    "want_long": want_long, "want_short": want_short, "use_fvg": use_fvg, "mtf_filter": mtf_filter,
+    "btc_filter": btc_filter, "funding_filter": funding_filter, "wall_filter": wall_filter,
+    "killzone": killzone, "confirm_exchanges": confirm_exchanges, "min_score": min_score,
+    "capital_usdt": capital_usdt, "risk_pct": risk_pct, "fee_pct": fee_pct,
+    "slippage_pct": slippage_pct, "timeframe": timeframe,
+}
+
+# ============================ Main navigation ============================
+
+SECTIONS = ["🔎 الماسح", "💥 رادار PUMP/DUMP", "🚀 DEX", "📊 سجل الإشارات", "🧠 الذاكرة والتعلّم", "🧪 اختبار تاريخي", "🎯 MEXC Up/Down"]
+section = st.radio("القسم", SECTIONS, horizontal=True, label_visibility="collapsed")
+
+if section == "🔎 الماسح":
+    state_key = "scan_main"
+    st.subheader("🔎 ماسح السوق")
+    st.caption(f"المصدر: {platform} USDT-M Futures | TF: {timeframe} | الشموع: {bars_limit} | العملات: {limit_coins} | "
+               f"أقل Score: {min_score} | توقيت القاهرة: {now_cairo().strftime('%H:%M')}")
+    if st.button("🔍 افحص السوق الآن", type="primary"):
+        result = run_scan(platform, settings, limit_coins, timeframe, bars_limit)
+        st.session_state[state_key] = result
+        if not result.get("error"):
+            saved = save_signals(result["signals"], platform)
+            if saved:
+                st.toast(f"تم حفظ {saved} إشارة في السجل")
+            if telegram_enabled and result["signals"]:
+                sent, errors, total = send_signal_batch(result["signals"], platform, tg_min_score)
+                if sent:
+                    st.success(f"📡 تم إرسال {sent} إشارة إلى تليجرام")
+                if errors:
+                    st.error(f"تعذر إرسال بعض الإشارات: {errors[-1]}")
+                if total == 0:
+                    st.info(f"مفيش إشارات بسكور ≥ {tg_min_score} للإرسال.")
+    render_scan_results(state_key, min_score, show_closest)
+
+elif section == "💥 رادار PUMP/DUMP":
+    ss = st.session_state
+    st.subheader("💥 رادار Pump / Dump — إنذار مبكر")
+    st.caption("بيدوّر على البصمة اللي بتسبق الحركة: حجم يتصاعد + تدفق أموال في اتجاه واحد + انضغاط تذبذب + قرب مستوى مهم، "
+               "وبعدين يأكدها بدفتر الأوامر وCVD الحقيقي وOI وFunding. الحالة «مبكر» = السعر لسه ما اتحركش.")
+    with st.expander("⚙️ إعدادات الرادار", expanded=False):
+        r1, r2, r3 = st.columns(3)
+        r_tf = r1.selectbox("الإطار", ["1m", "3m", "5m", "15m"], index=2, key="r_tf")
+        r_n = r2.slider("عدد العملات", 20, 150, 60, 10, key="r_n")
+        r_deep = r3.slider("فحص عميق لأفضل", 5, 30, 12, key="r_deep")
+        r4, r5, r6 = st.columns(3)
+        r_min = r4.slider("أقل Score للعرض", 30, 95, 55, key="r_min")
+        r_auto = r5.checkbox("🔄 مراقبة تلقائية", value=False, key="r_auto")
+        r_every = r6.select_slider("كل (ثانية)", options=[30, 60, 120, 300], value=60, key="r_every")
+        r7, r8, r9 = st.columns(3)
+        r_hide_late = r7.checkbox("اخفِ المتأخر ⚠️", value=True, key="r_hide_late")
+        r_tg = r8.checkbox("📡 تنبيه Telegram تلقائي", value=False, key="r_tg")
+        r_tg_min = r9.slider("أقل Score للتنبيه", 50, 95, 70, key="r_tg_min")
+    st.caption(f"المصدر: {platform} | الإطار {r_tf} | توقيت القاهرة {now_cairo().strftime('%H:%M:%S')}")
+
+    if time.time() - ss.get("radar_eval_ts", 0) > 120:
+        ss["radar_eval_ts"] = time.time()
+        try:
+            radar_evaluate()
+        except Exception as exc:
+            st.caption(f"تعذر تقييم تنبيهات الرادار: {exc}")
+
+    auto_due = r_auto and (time.time() - ss.get("radar_last_ts", 0) >= r_every)
+    if st.button("💥 افحص الرادار الآن", type="primary") or auto_due:
+        res = run_radar(platform, r_n, r_tf, r_deep)
+        ss["radar_res"] = res
+        ss["radar_last_ts"] = time.time()
+        if not res.get("error"):
+            radar_log_alerts(res["rows"], platform, r_min)
+            if r_tg:
+                alerted = ss.setdefault("radar_alerted", {})
+                for item in res["rows"]:
+                    if (item["direction"] == "VOLATILE" or item["stage_key"] == "late" or item["score"] < r_tg_min
+                            or time.time() - alerted.get(item["symbol"], 0) < 3600):
+                        continue
+                    ok, _msg = send_telegram(format_radar_telegram(item, platform))
+                    if ok:
+                        alerted[item["symbol"]] = time.time()
+
+    tab_radar, tab_rlog = st.tabs(["🎯 الرادار", "📒 سجل وتقييم التنبيهات"])
+    with tab_radar:
+        res = ss.get("radar_res")
+        if not res:
+            st.info("اضغط «افحص الرادار الآن» أو فعّل المراقبة التلقائية.")
+        elif res.get("error"):
+            st.error(res["error"])
+        else:
+            btc_txt = f" | BTC ساعة: {res['btc']:+.2f}%" if res.get("btc") is not None else ""
+            st.caption(f"آخر فحص: {res['ts']} | {res['platform']} | TF {res['tf']} | مفحوص: {res['scanned']}{btc_txt}")
+            shown = [r for r in res["rows"] if r["score"] >= r_min and not (r_hide_late and r["stage_key"] == "late")]
+            if not shown:
+                st.warning("مفيش مرشحين بالسكور المطلوب حاليًا. ده طبيعي — السوق الهادي مفيهوش بصمات قوية. "
+                           "تقدر تقلل «أقل Score للعرض» أو تفعّل المراقبة التلقائية.")
+                near = res["rows"][:5]
+                if near:
+                    with st.expander("أقرب 5 مرشحين (ضعاف)"):
+                        show_df(pd.DataFrame([{"العملة": r["symbol"], "الاتجاه": r["direction"], "Score": r["score"],
+                                               "المرحلة": r["stage"]} for r in near]))
+            else:
+                early = sum(1 for r in shown if r["stage_key"] == "early")
+                st.success(f"{len(shown)} مرشح — منهم {early} في مرحلة مبكرة (قبل الحركة).")
+                for k, item in enumerate(shown):
+                    render_radar_card(item, f"{k}_{item['symbol']}", res["platform"], r_tg_min)
+            st.caption("⚠️ الرادار بيرفع احتمال مش بيضمن. استخدم وقف خسارة، وتجاهل أي عملة سيولتها ضعيفة. "
+                       "نسبة النجاح الحقيقية تظهر في تبويب السجل بعد ما التنبيهات تتحسم.")
+    with tab_rlog:
+        with db() as conn:
+            rlog = pd.read_sql_query("SELECT id,created_at,exchange,symbol,direction,score,stage,price,outcome,mfe,mae "
+                                     "FROM radar_log ORDER BY id DESC LIMIT 300", conn)
+        if rlog.empty:
+            st.info("لسه مفيش تنبيهات مسجلة. التنبيهات اللي score ≥ حد العرض وغير متأخرة بتتسجل تلقائيًا وبتتقيّم بعد 60 دقيقة.")
+        else:
+            decided = rlog[rlog.outcome.isin(["HIT", "MISS"])]
+            q1, q2, q3, q4 = st.columns(4)
+            q1.metric("تنبيهات", len(rlog))
+            q2.metric("محسومة (Hit/Miss)", len(decided))
+            q3.metric("Hit Rate", f"{(decided.outcome == 'HIT').mean():.1%}" if len(decided) else "—")
+            q4.metric("مفتوحة", int((rlog.outcome == "OPEN").sum()))
+            if len(decided) >= 5:
+                buckets = []
+                for lo_, hi_ in ((0, 65), (65, 75), (75, 101)):
+                    sub = decided[(decided.score >= lo_) & (decided.score < hi_)]
+                    if len(sub):
+                        buckets.append({"Score": f"{lo_}-{min(hi_, 100)}", "عدد": len(sub),
+                                        "Hit Rate": f"{(sub.outcome == 'HIT').mean():.1%}"})
+                if buckets:
+                    st.write("**Hit Rate حسب الـ Score**")
+                    show_df(pd.DataFrame(buckets))
+            st.caption("Hit = الحركة المتوقعة (2×ATR، حد أدنى 1%) حصلت قبل حركة عكسية (1.2×ATR، حد أدنى 0.6%) خلال 60 دقيقة. "
+                       "لو الحركتين في نفس الدقيقة تُحسب Miss.")
+            show_df(rlog)
+
+elif section == "🚀 DEX":
+    st.subheader("🚀 ماسح DEX — BNB Smart Chain")
+    c1, c2, c3 = st.columns(3)
+    dex_vol = c1.number_input("أقل حجم 5 دقائق $", min_value=0.0, value=5000.0, step=1000.0)
+    dex_chg = c2.number_input("أقل تغير 5 دقائق %", min_value=0.0, value=5.0, step=1.0)
+    dex_liq = c3.number_input("أقل سيولة $", min_value=0.0, value=15000.0, step=5000.0)
+    if st.button("🚀 افحص DEX الآن", type="primary"):
+        with st.spinner("بيجمع أزواج BSC..."):
+            passed, near = scan_dex(dex_vol, dex_chg, dex_liq)
+        st.session_state["dex_res"] = {"passed": passed, "near": near, "ts": now_cairo().strftime("%H:%M:%S")}
+        if telegram_enabled:
+            sent_addr = st.session_state.setdefault("dex_sent", set())
+            for item in passed[:5]:
+                if item["address"] in sent_addr:
+                    continue
+                ok, err = send_telegram(f"🚀 DEX {item['symbol']} على BSC\nالسعر: ${item['price']:.10g}\n"
+                                        f"5m: {item['change_5m']:.2f}%\nحجم 5m: ${item['volume_5m']:,.0f}\n"
+                                        f"السيولة: ${item['liquidity']:,.0f}\n{item['url']}\n@WHYNOTBLY7")
+                if ok:
+                    sent_addr.add(item["address"])
+                else:
+                    st.warning(f"تعذر إرسال {item['symbol']}: {err}")
+    dex_res = st.session_state.get("dex_res")
+    if dex_res:
+        st.caption(f"آخر فحص: {dex_res['ts']}")
+        if dex_res["passed"]:
+            st.success(f"{len(dex_res['passed'])} زوج مطابق")
+            for i, item in enumerate(dex_res["passed"]):
+                render_dex_item(item, f"p{i}")
+        else:
+            st.info("لا توجد أزواج مطابقة للشروط حاليًا. أقرب النتائج:")
+            for i, item in enumerate(dex_res["near"]):
+                render_dex_item(item, f"n{i}")
+
+elif section == "📊 سجل الإشارات":
+    st.subheader("📊 سجل الإشارات المحفوظ")
+    history = load_signal_history(300)
+    if history.empty:
+        st.info("لا توجد إشارات محفوظة بعد. شغّل الماسح أولاً.")
+    else:
+        outcome_filter = st.selectbox("تصفية النتيجة", ["الكل", "OPEN", "WIN", "LOSS", "BREAKEVEN", "EXPIRED"])
+        view = history if outcome_filter == "الكل" else history[history["outcome"] == outcome_filter]
+        show_df(view)
+        st.caption("المتابعة التلقائية كل دقيقة والتطبيق مفتوح. الصفقة لازم يتلمس دخولها الأول، وعند تعارض الوقف والهدف في نفس الشمعة يُحتسب الوقف.")
+
+elif section == "🧠 الذاكرة والتعلّم":
+    st.subheader("🧠 الذاكرة الدائمة — نتائج الصفقات")
+    if st.button("🔄 حدّث المراقبة الآن"):
+        monitor_status = get_monitor_status(force=True)
+    st.caption(f"المراقبة: فُحصت {monitor_status['checked']} صفقة مفتوحة؛ حُسمت {len(monitor_status['resolved'])}."
+               + (f" ⚠️ {monitor_status['error']}" if monitor_status.get("error") else ""))
+    if monitor_status["resolved"]:
+        show_df(pd.DataFrame(monitor_status["resolved"]))
+    profile = learning_profile()
+    a, b, c = st.columns(3)
+    a.metric("صفقات محسومة", profile["trades"])
+    b.metric("Win Rate", f"{profile['win_rate']:.1f}%")
+    c.metric("تعديل السكور المتعلّم", f"{profile['adjustment']:+d}")
+    if profile["by_side"]:
+        st.write("**الأداء حسب الاتجاه**")
+        show_df(pd.DataFrame([{"الاتجاه": k, **v} for k, v in profile["by_side"].items()]))
+    with db() as conn:
+        open_trades = pd.read_sql_query(
+            "SELECT id,created_at,exchange,symbol,side,score FROM signals WHERE outcome='OPEN' ORDER BY id DESC LIMIT 300", conn)
+        all_trades = pd.read_sql_query(
+            "SELECT id,created_at,exchange,symbol,side,score,entry,stop,tp1,tp2,tp3,outcome,pnl_pct,result_source "
+            "FROM signals ORDER BY id DESC LIMIT 500", conn)
+    st.markdown("#### تحديث نتيجة صفقة يدويًا")
+    if not open_trades.empty:
+        options = {f"#{int(r.id)} {r.exchange} {r.symbol} {r.side} | {str(r.created_at)[:16]}": int(r.id)
+                   for r in open_trades.itertuples()}
+        selected = st.selectbox("اختر الإشارة", list(options))
+        choice = st.selectbox("النتيجة", ["WIN", "LOSS", "BREAKEVEN", "OPEN"])
+        if st.button("💾 حفظ النتيجة"):
+            update_trade_outcome(options[selected], choice)
+            st.success("تم الحفظ.")
+            st.rerun()
+    else:
+        st.info("لا توجد صفقات مفتوحة.")
+    st.markdown("#### سجل النتائج")
+    if not all_trades.empty:
+        show_df(all_trades)
+    else:
+        st.info("سيظهر السجل بعد أول فحص.")
+    st.markdown("#### نسخ احتياطي (مهم على Streamlit Cloud)")
+    st.caption("الملفات بتتمسح عند إعادة تشغيل التطبيق، فصدّر السجل دوريًا وارفعه تاني عند الحاجة.")
+    full = load_signal_history(100000)
+    st.download_button("⬇️ تصدير السجل CSV", full.to_csv(index=False).encode("utf-8"),
+                       file_name="bly7trader_signals.csv", mime="text/csv")
+    up = st.file_uploader("استيراد سجل CSV", type=["csv"])
+    if up is not None and st.button("📥 استيراد"):
+        try:
+            added, msg = import_history(pd.read_csv(up))
+            st.success(f"تمت إضافة {added} صفقة.") if msg == "OK" else st.error(msg)
+        except Exception as exc:
+            st.error(f"فشل الاستيراد: {exc}")
+
+elif section == "🧪 اختبار تاريخي":
+    st.subheader("🧪 باكتست بنفس منطق الماسح (بدون فلاتر الشبكة)")
+    st.caption("بيستخدم نفس حساب Score والاتجاه والدخول/الوقف/الأهداف على شموع تاريخية، ويحاكي التنفيذ بنفس قواعد المراقبة.")
+    c1, c2, c3 = st.columns(3)
+    bt_platform = c1.selectbox("المنصة", list(KLINE_SOURCES), index=list(KLINE_SOURCES).index(platform), key="bt_platform")
+    bt_symbol = c2.text_input("الرمز", value=DEFAULT_TEST_SYMBOL[bt_platform], key=f"bt_sym_{bt_platform}")
+    bt_tf = c3.selectbox("الإطار", ["1m", "3m", "5m", "15m", "1h"], index=2, key="bt_tf")
+    c4, c5, c6 = st.columns(3)
+    bt_target = c4.selectbox("الهدف", ["TP1 (1.5R)", "TP2 (2.5R)", "TP3 (3.5R)"], key="bt_target")
+    bt_hold = c5.slider("أقصى مدة احتفاظ (شموع)", 10, 200, 48, key="bt_hold")
+    bt_score = c6.slider("أقل Score للباكتست", 0, 95, int(min_score), key="bt_score")
+    if st.button("▶️ شغّل الباكتست", type="primary"):
+        with st.spinner("بيجلب الشموع ويشغّل الاختبار..."):
+            frame = KLINE_SOURCES[bt_platform](bt_symbol.strip(), bt_tf, 1000)
+            if frame is None or len(frame) < 120:
+                st.session_state["bt_res"] = {"error": "تعذر جلب شموع كافية (راجع صيغة الرمز أو جرّب منصة تانية)."}
+            else:
+                bt_set = dict(settings)
+                bt_set["min_score"] = bt_score
+                bt_set["want_long"], bt_set["want_short"] = True, True
+                trades = run_backtest(frame, bt_set, ["TP1 (1.5R)", "TP2 (2.5R)", "TP3 (3.5R)"].index(bt_target), bt_hold)
+                st.session_state["bt_res"] = {"trades": trades, "bars": len(frame), "label": f"{bt_platform} {bt_symbol} {bt_tf}"}
+    bt = st.session_state.get("bt_res")
+    if bt:
+        if bt.get("error"):
+            st.error(bt["error"])
+        else:
+            trades = bt["trades"]
+            st.caption(f"{bt['label']} | شموع: {bt['bars']}")
+            if trades.empty:
+                st.info("مفيش صفقات عدّت الفلتر. قلّل أقل Score أو جرّب رمز/إطار تاني.")
+            else:
+                done = trades[trades.outcome.isin(["WIN", "LOSS", "TIMEOUT"])]
+                wins, losses = int((done.outcome == "WIN").sum()), int((done.outcome == "LOSS").sum())
+                gross_win = done.loc[done.R > 0, "R"].sum()
+                gross_loss = -done.loc[done.R < 0, "R"].sum()
+                pf = gross_win / gross_loss if gross_loss > 0 else float("inf") if gross_win > 0 else 0
+                equity = done["R"].cumsum()
+                dd = float((equity - equity.cummax()).min()) if len(equity) else 0.0
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("صفقات منفّذة", len(done))
+                m2.metric("رابحة / خاسرة", f"{wins} / {losses}")
+                m3.metric("Win Rate", f"{wins / max(wins + losses, 1) * 100:.1f}%")
+                m4.metric("لم يُفعّل دخولها", int((trades.outcome == "NOFILL").sum()))
+                m5, m6, m7 = st.columns(3)
+                m5.metric("إجمالي R", f"{done['R'].sum():+.2f}")
+                m6.metric("متوسط R (Expectancy)", f"{done['R'].mean():+.3f}" if len(done) else "—")
+                m7.metric("Profit Factor", "∞" if pf == float("inf") else f"{pf:.2f}")
+                st.caption(f"أقصى تراجع: {dd:.2f}R")
+                if len(equity):
+                    st.line_chart(equity.reset_index(drop=True))
+                show_df(trades)
+            st.caption("تنبيه: باكتست على بيانات ماضية لا يضمن الأداء المستقبلي، ولا يشمل Funding ولا فروق السبريد الفعلية.")
+
+elif section == "🎯 MEXC Up/Down":
+    render_pm_section(telegram_enabled)
+
+# المؤقّت في آخر السكريبت عشان ما يقاطعش فحص شغّال
+try:
+    from streamlit_autorefresh import st_autorefresh
+    _pm_fast = section == "🎯 MEXC Up/Down" and st.session_state.get("pm_live_on", True)
+    _radar_auto = section == "💥 رادار PUMP/DUMP" and st.session_state.get("r_auto", False)
+    if _pm_fast:
+        st_autorefresh(interval=2_000, key="bly7_pm_live_refresh")
+    elif _radar_auto:
+        st_autorefresh(interval=10_000, key="bly7_radar_refresh")
+    else:
+        st_autorefresh(interval=60_000, key="bly7_auto_monitor")
+except Exception:
+    pass
+
+st.markdown("---")
+st.caption("BLY7TRADER | بيانات من واجهات المنصات العامة؛ قد تحدث انقطاعات/حدود معدل. "
+           "لا تنفّذ صفقة اعتمادًا على الإشارة وحدها؛ راجع السيولة والسبريد والمخاطرة.")
