@@ -1,4 +1,4 @@
-# BLY7TRADER — V24 (Pro UI + Lead Indicators + Pump/Dump Radar)
+# BLY7TRADER —  (Pro UI + Lead Indicators + Pump/Dump Radar)
 ## ملاحظة: الإشارات تنبيهات بحثية وليست نصيحة مالية.
 
 import os
