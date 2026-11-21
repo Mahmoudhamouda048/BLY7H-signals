@@ -1,7 +1,8 @@
-# BLY7TRADER — V23 (Fixed + Upgraded)
+# BLY7TRADER — V24 (Pro UI + Lead Indicators + Pump/Dump Radar)
 ## ملاحظة: الإشارات تنبيهات بحثية وليست نصيحة مالية.
 
 import os
+import json
 import time
 import sqlite3
 from contextlib import contextmanager
@@ -20,25 +21,101 @@ except Exception:  # tzdata غير متوفر
     CAIRO = timezone(timedelta(hours=2))
 
 st.set_page_config(
-    page_title="BLY7TRADER V23",
+    page_title="BLY7TRADER V24",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-APP_TITLE = "💎 BLY7TRADER — V23 ✅ Fixed & Upgraded"
+APP_TITLE = "BLY7TRADER"
+APP_VERSION = "V24"
 DB_PATH = os.getenv("BLY7TRADER_DB", "bly7trader_memory.db")
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "BLY7TRADER/23.0"})
+SESSION.headers.update({"User-Agent": "BLY7TRADER/24.0"})
 TIMEOUT = 8
 STABLES = {"USDCUSDT", "BUSDUSDT", "DAIUSDT", "FDUSDUSDT", "USDEUSDT", "TUSDUSDT"}
 
+# ============================ Theme / UI helpers ============================
+
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+.stMarkdown, .stButton button, .stTabs button, label, .stCaption { font-family: 'Cairo', sans-serif; }
+.block-container { padding-top: 1.2rem; max-width: 1280px; }
+.b7-hero { padding: 18px 22px; border-radius: 16px; margin-bottom: 14px; color: #fff;
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 55%, #6d28d9 100%); }
+.b7-hero h1 { margin: 0; font-size: 1.7rem; font-weight: 800; letter-spacing: .5px; }
+.b7-hero p { margin: 4px 0 0 0; opacity: .85; font-size: .95rem; }
+.b7-badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem;
+  font-weight: 700; margin: 0 3px 3px 0; }
+.b7-dec { border: 1.5px solid; border-radius: 16px; padding: 16px 20px; margin: 6px 0 12px 0; }
+.b7-dec-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
+.b7-dec-label { font-size: 2rem; font-weight: 800; }
+.b7-dec-sub { font-size: .85rem; opacity: .8; }
+.b7-dec-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 12px; }
+.b7-stat { background: rgba(128,128,128,.10); border-radius: 12px; padding: 8px 12px; }
+.b7-stat .k { font-size: .75rem; opacity: .7; }
+.b7-stat .v { font-size: 1.25rem; font-weight: 800; }
+.b7-gauge { margin: 8px 0 14px 0; }
+.b7-g-top { display: flex; justify-content: space-between; font-size: .88rem; font-weight: 600; margin-bottom: 4px; }
+.b7-g-track { position: relative; height: 12px; border-radius: 999px; background: rgba(128,128,128,.18); overflow: hidden; }
+.b7-g-mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: rgba(128,128,128,.55); z-index: 2; }
+.b7-g-fill { position: absolute; top: 0; bottom: 0; border-radius: 999px; }
+.b7-note { font-size: .78rem; opacity: .65; margin-top: 2px; }
+.b7-score { height: 8px; border-radius: 999px; background: rgba(128,128,128,.18); overflow: hidden; margin: 2px 0 8px 0; }
+.b7-score > div { height: 100%; border-radius: 999px; }
+@media (max-width: 700px) { .b7-dec-grid { grid-template-columns: repeat(2, 1fr); } .b7-dec-label { font-size: 1.5rem; } }
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+TONES = {"up": "#16a34a", "down": "#dc2626", "neutral": "#64748b", "warn": "#d97706", "info": "#2563eb"}
+
+
+def badge(text, tone="neutral"):
+    c = TONES.get(tone, TONES["neutral"])
+    return f'<span class="b7-badge" style="background:{c}22;color:{c};border:1px solid {c}55">{text}</span>'
+
+
+def gauge(label, value, text="", note=""):
+    """شريط مؤشر من -1 (أحمر/يسار) إلى +1 (أخضر/يمين)."""
+    v = float(max(-1.0, min(1.0, value if value is not None else 0.0)))
+    pct = abs(v) * 50
+    color = TONES["up"] if v > 0.05 else TONES["down"] if v < -0.05 else TONES["neutral"]
+    left = 50 if v >= 0 else 50 - pct
+    st.markdown(
+        f'<div class="b7-gauge"><div class="b7-g-top"><span>{label}</span>'
+        f'<span style="color:{color}">{text}</span></div>'
+        f'<div class="b7-g-track"><div class="b7-g-mid"></div>'
+        f'<div class="b7-g-fill" style="left:{left}%;width:{pct}%;background:{color}"></div></div>'
+        f'<div class="b7-note">{note}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def score_bar(value, tone="info"):
+    c = TONES.get(tone, TONES["info"])
+    v = max(0, min(100, float(value)))
+    st.markdown(f'<div class="b7-score"><div style="width:{v}%;background:{c}"></div></div>', unsafe_allow_html=True)
+
+
+def decision_card(label, tone, sub, stats):
+    c = TONES.get(tone, TONES["neutral"])
+    cells = "".join(f'<div class="b7-stat"><div class="k">{k}</div><div class="v">{v}</div></div>' for k, v in stats)
+    st.markdown(
+        f'<div class="b7-dec" style="border-color:{c}88;background:{c}14">'
+        f'<div class="b7-dec-top"><span class="b7-dec-label" style="color:{c}">{label}</span>'
+        f'<span class="b7-dec-sub">{sub}</span></div><div class="b7-dec-grid">{cells}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 st.markdown(
     f"""
-    <h1 style="text-align:center">{APP_TITLE}</h1>
-    <p style="text-align:center">
-    ماسح عقود Futures حقيقية + ذاكرة دائمة + تعلّم من نتائج الصفقات + باكتست
-    </p>
+    <div class="b7-hero">
+      <h1>💎 {APP_TITLE} <span style="opacity:.7;font-weight:600">{APP_VERSION}</span></h1>
+      <p>ماسح عقود Futures + رادار Pump/Dump مبكر + MEXC Up/Down بمؤشرات قائدة + ذاكرة وتعلّم وباكتست</p>
+    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -46,11 +123,11 @@ st.markdown(
 
 # ============================ Utilities ============================
 
-def api_json(url, params=None, retries=1):
+def api_json(url, params=None, retries=1, timeout=None):
     """GET JSON مع فحص أكواد الخطأ الشائعة؛ يرجع None عند أي فشل."""
     for attempt in range(retries + 1):
         try:
-            response = SESSION.get(url, params=params, timeout=TIMEOUT)
+            response = SESSION.get(url, params=params, timeout=timeout or TIMEOUT)
             if response.status_code == 429:
                 time.sleep(1.0)
                 continue
@@ -123,6 +200,11 @@ def _secret(name, default=""):
     except Exception:
         pass
     return os.getenv(name, default)
+
+
+def _parse_dt(text):
+    dt = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 # ============================ Database ============================
@@ -491,15 +573,39 @@ def get_btc_change():
     return None
 
 
-def get_real_cvd(exchange, symbol, limit=500):
-    """CVD حقيقي من aggTrades في Binance فقط؛ غيره يرجع None."""
-    if exchange != "BINANCE":
+def get_trades(exchange, symbol, limit=1000):
+    """آخر صفقات فعلية: قائمة (ts_ms, qty, is_buy_aggressor) من كل المنصات الأربع."""
+    try:
+        if exchange == "BINANCE":
+            p = api_json("https://fapi.binance.com/fapi/v1/aggTrades",
+                         {"symbol": symbol, "limit": min(limit, 1000)}, retries=0)
+            if isinstance(p, list):
+                return [(safe_float(t.get("T")), safe_float(t.get("q")), not t.get("m")) for t in p]
+        elif exchange == "BYBIT":
+            p = api_json("https://api.bybit.com/v5/market/recent-trade",
+                         {"category": "linear", "symbol": symbol, "limit": min(limit, 1000)}, retries=0)
+            rows = ((p or {}).get("result") or {}).get("list") or []
+            return [(safe_float(t.get("time")), safe_float(t.get("size")), t.get("side") == "Buy") for t in rows]
+        elif exchange == "MEXC":
+            p = api_json("https://contract.mexc.com/api/v1/contract/deals/" + symbol, {"limit": 100}, retries=0)
+            rows = (p or {}).get("data") or []
+            return [(safe_float(t.get("t")), safe_float(t.get("v")), t.get("T") == 1) for t in rows]
+        elif exchange == "KUCOIN":
+            p = api_json("https://api-futures.kucoin.com/api/v1/trade/history", {"symbol": symbol}, retries=0)
+            rows = (p or {}).get("data") or []
+            return [(safe_float(t.get("ts")) / 1e6, safe_float(t.get("size")), t.get("side") == "buy") for t in rows]
+    except Exception:
+        pass
+    return []
+
+
+def get_real_cvd(exchange, symbol, limit=1000):
+    """CVD حقيقي % من صفقات المنصة (Taker buy - sell)؛ None لو غير متاح."""
+    trades = get_trades(exchange, symbol, limit)
+    if len(trades) < 20:
         return None
-    payload = api_json("https://fapi.binance.com/fapi/v1/aggTrades", {"symbol": symbol, "limit": min(limit, 1000)})
-    if not isinstance(payload, list) or not payload:
-        return None
-    buy = sum(safe_float(t.get("q")) for t in payload if not t.get("m"))
-    sell = sum(safe_float(t.get("q")) for t in payload if t.get("m"))
+    buy = sum(q for _, q, b in trades if b)
+    sell = sum(q for _, q, b in trades if not b)
     total = buy + sell
     return (buy - sell) / total * 100 if total else None
 
@@ -837,10 +943,8 @@ def analyze(frame, symbol, settings, exchange="BINANCE", learning_obj=None, btc_
 
 # ============================ Scanner ============================
 
-def run_scan(platform, settings, limit_coins, timeframe, bars_limit, dump_only):
+def run_scan(platform, settings, limit_coins, timeframe, bars_limit):
     local = dict(settings)
-    if dump_only:
-        local["want_long"], local["want_short"] = False, True
     symbols = SYMBOL_SOURCES[platform](limit_coins)
     if not symbols:
         return {"error": f"تعذر جلب قائمة الرموز من {platform} (قد تكون المنصة محجوبة من سيرفرك).",
@@ -884,22 +988,28 @@ def run_scan(platform, settings, limit_coins, timeframe, bars_limit, dump_only):
 
 
 def render_signal_card(signal, key, platform):
+    is_long = signal["type"] == "LONG"
+    tone = "up" if is_long else "down"
     with st.container(border=True):
         left, right = st.columns([4, 1])
         with left:
-            st.markdown(f"### {'🚀' if signal['type'] == 'LONG' else '📉'} {signal['symbol']} — {signal['type']}")
+            st.markdown(f"### {'🚀' if is_long else '📉'} {signal['symbol']} "
+                        + badge(signal["type"], tone)
+                        + badge("CVD حقيقي" if signal.get("real_cvd") is not None else "CVD Proxy",
+                                "info" if signal.get("real_cvd") is not None else "neutral"),
+                        unsafe_allow_html=True)
             st.write(f"السعر: **{signal['price']}** | تغير آخر شمعة: **{signal['ch']}%** | "
                      f"Volume: **x{signal['vol']}** | ضغط الشموع: **{signal['buy']}%**")
         with right:
             st.metric("Score", f"{signal['score']}/100")
-        a, b, c, d = st.columns(4)
+        score_bar(signal["score"], tone)
+        a, b, c, d, e = st.columns(5)
         a.metric("الدخول (Limit)", signal["entry"])
         b.metric("وقف الخسارة", signal["stop"])
         c.metric("TP1", signal["tp1"])
         d.metric("TP2", signal["tp2"])
-        st.metric("TP3", signal["tp3"])
-        st.caption(f"R:R إلى TP1 = {signal['rr_tp1']} | حجم المركز النظري = {signal['position_qty']} | "
-                   f"مصدر CVD: {'تداولات فعلية' if signal.get('real_cvd') is not None else 'Proxy شموع'}")
+        e.metric("TP3", signal["tp3"])
+        st.caption(f"R:R إلى TP1 = {signal['rr_tp1']} | حجم المركز النظري = {signal['position_qty']}")
         with st.expander("تفاصيل التحليل"):
             st.text(signal["extra"])
         if st.button("📡 أرسل هذه الإشارة إلى Telegram", key=f"tg_{key}"):
@@ -933,11 +1043,6 @@ def render_scan_results(state_key, min_score, show_closest):
 
 
 # ============================ Auto monitor ============================
-
-def _parse_dt(text):
-    dt = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
 
 def auto_monitor_open_trades(limit=150):
     """
@@ -1167,12 +1272,430 @@ def run_backtest(frame, settings, target_idx=0, max_hold=48, fill_wait=6, warmup
     return pd.DataFrame(trades)
 
 
+# ============================ Pump / Dump Radar ============================
+# الفكرة: نلتقط "البصمة" اللي بتسبق الحركة (حجم يتصاعد + تدفق أموال في اتجاه واحد + انضغاط تذبذب + قرب مستوى)
+# ونفرّق بين: مبكر (قبل الحركة) / بدأت / متأخر (الحركة خلصت تقريبًا). مفيش حد يتنبأ بالمستقبل 100%؛
+# الرادار بيرفع احتمال، والسجل بيقيس نسبة النجاح الفعلية عشان تعرف تثق فيه قد إيه.
+
+def radar_init():
+    with db() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS radar_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, exchange TEXT, symbol TEXT,
+            direction TEXT, score INTEGER, stage TEXT, price REAL, atr_pct REAL,
+            outcome TEXT DEFAULT 'OPEN', mfe REAL, mae REAL, closed_at TEXT)""")
+
+
+def radar_features(frame):
+    """ميزات الإنذار المبكر من الشموع. آخر شمعة = الجارية (سعر لحظي)، والحجم يُقاس على الشموع المغلقة."""
+    try:
+        f = add_indicators(frame)
+        n = len(f)
+        if n < 60:
+            return None
+        o, h, l, c, v = (f[k].to_numpy(float) for k in ("open", "high", "low", "close", "vol"))
+        last = c[-1]
+        if last <= 0:
+            return None
+        atr = safe_float(f["atr"].iloc[-2])
+        if atr <= 0:
+            atr = last * 0.004
+        atr_pct = max(atr / last * 100, 0.05)
+        med_v = float(np.median(v[-50:-4]))
+        if med_v <= 0:
+            return None
+        vr1 = v[-2] / med_v
+        vr3 = float(v[-4:-1].mean()) / med_v
+        move3 = (last - c[-4]) / c[-4] * 100
+        move_atr = move3 / atr_pct
+        rng = np.maximum(h - l, last * 1e-9)
+        clv = ((c - l) - (h - c)) / rng
+        vv = v[-7:-1]
+        mf = float((clv[-7:-1] * vv).sum() / max(vv.sum(), 1e-12))
+        sma = pd.Series(c).rolling(20).mean()
+        sd = pd.Series(c).rolling(20).std()
+        bw = (4 * sd / sma).to_numpy()
+        hist_bw = bw[-102:-2]
+        hist_bw = hist_bw[~np.isnan(hist_bw)]
+        bw_now = bw[-2]
+        bw_pct = float((hist_bw < bw_now).mean()) if len(hist_bw) >= 20 and not np.isnan(bw_now) else 0.5
+        hi_n, lo_n = float(h[-50:-2].max()), float(l[-50:-2].min())
+        near_hi = (hi_n - last) / max(atr, 1e-12)
+        near_lo = (last - lo_n) / max(atr, 1e-12)
+        roc_now = (c[-2] - c[-5]) / c[-5] * 100
+        roc_prev = (c[-5] - c[-8]) / c[-8] * 100
+        accel = (roc_now - roc_prev) / atr_pct
+        hl = float(np.mean(np.diff(l[-8:-1]) > 0))
+        lh = float(np.mean(np.diff(h[-8:-1]) < 0))
+        return {
+            "last": last, "atr": atr, "atr_pct": atr_pct, "vr1": vr1, "vr3": vr3, "move3": move3,
+            "move_atr": move_atr, "mf": mf, "bw_pct": bw_pct, "squeeze": bw_pct <= 0.25,
+            "hi_n": hi_n, "lo_n": lo_n, "near_hi": near_hi, "near_lo": near_lo,
+            "broke_hi": last > hi_n, "broke_lo": last < lo_n, "accel": accel, "hl": hl, "lh": lh,
+            "rsi": safe_float(f["rsi"].iloc[-2], 50),
+            "ema_bull": safe_float(f["ema9"].iloc[-1]) > safe_float(f["ema21"].iloc[-1]),
+            "low6": float(l[-7:-1].min()), "high6": float(h[-7:-1].max()),
+        }
+    except Exception:
+        return None
+
+
+def radar_score(ft, ctx):
+    """يحسب احتمال Pump و Dump (0-99) مع الأسباب. ctx = بيانات المرحلة التانية (دفتر/CVD/OI/Funding/BTC)."""
+    pump = dump = 0.0
+    rp, rd = [], []
+    vr3, mf, ma = ft["vr3"], ft["mf"], ft["move_atr"]
+
+    energy = min(max(vr3 - 1.0, 0) * 6, 22)
+    if energy > 0:
+        if mf > 0.1:
+            pump += energy
+            rp.append(f"حجم متصاعد x{vr3:.1f} مع شراء")
+        elif mf < -0.1:
+            dump += energy
+            rd.append(f"حجم متصاعد x{vr3:.1f} مع بيع")
+        else:
+            pump += energy * 0.3
+            dump += energy * 0.3
+    if mf > 0:
+        pump += mf * 20
+        if mf > 0.25:
+            rp.append(f"تدفق أموال شرائي {mf:+.2f}")
+    else:
+        dump += -mf * 20
+        if mf < -0.25:
+            rd.append(f"تدفق أموال بيعي {mf:+.2f}")
+    pump += ft["hl"] * 8
+    dump += ft["lh"] * 8
+    if ft["hl"] >= 0.8:
+        rp.append("قيعان صاعدة متتالية")
+    if ft["lh"] >= 0.8:
+        rd.append("قمم هابطة متتالية")
+    if ft["squeeze"]:
+        if ft["near_hi"] < 1.0:
+            pump += 12
+            rp.append("انضغاط تذبذب + السعر قرب أعلى 50 شمعة")
+        if ft["near_lo"] < 1.0:
+            dump += 12
+            rd.append("انضغاط تذبذب + السعر قرب أدنى 50 شمعة")
+    if ft["broke_hi"] and ma < 3:
+        pump += 10
+        rp.append("اختراق قمة 50 شمعة")
+    if ft["broke_lo"] and ma > -3:
+        dump += 10
+        rd.append("كسر قاع 50 شمعة")
+    acc = ft["accel"]
+    if acc > 0:
+        pump += min(acc, 1.0) * 8
+        if acc > 0.4:
+            rp.append("تسارع صعودي")
+    elif acc < 0:
+        dump += min(-acc, 1.0) * 8
+        if acc < -0.4:
+            rd.append("تسارع هبوطي")
+    if ft["ema_bull"]:
+        pump += 4
+    else:
+        dump += 4
+    if vr3 > 2.5 and abs(ma) < 1.0:
+        if mf > 0.15:
+            pump += 10
+            rp.append("امتصاص/تجميع: حجم كبير بدون حركة سعرية")
+        elif mf < -0.15:
+            dump += 10
+            rd.append("تصريف: حجم كبير بدون حركة سعرية")
+
+    # الحركة المتأخرة
+    if ma > 3.5:
+        pump -= min((ma - 3.5) * 6, 24)
+        rp.append("⚠️ الحركة الصاعدة متقدمة بالفعل")
+        if ft["rsi"] > 80:
+            dump += 6
+            rd.append("إرهاق شرائي RSI>80؛ احتمال انعكاس")
+    if ma < -3.5:
+        dump -= min((-ma - 3.5) * 6, 24)
+        rd.append("⚠️ الحركة الهابطة متقدمة بالفعل")
+        if ft["rsi"] < 20:
+            pump += 6
+            rp.append("إرهاق بيعي RSI<20؛ احتمال ارتداد")
+
+    # المرحلة التانية
+    book, cvd, oi = ctx.get("book"), ctx.get("cvd"), ctx.get("oi")
+    fund, btc = ctx.get("funding"), ctx.get("btc")
+    if book is not None:
+        if book > 12:
+            pump += 7
+            rp.append(f"دفتر الأوامر مائل للشراء {book:+.0f}%")
+        elif book < -12:
+            dump += 7
+            rd.append(f"دفتر الأوامر مائل للبيع {book:+.0f}%")
+    if cvd is not None:
+        if cvd > 8:
+            pump += 8
+            rp.append(f"CVD حقيقي إيجابي {cvd:+.0f}%")
+        elif cvd < -8:
+            dump += 8
+            rd.append(f"CVD حقيقي سلبي {cvd:+.0f}%")
+    if oi is not None and oi >= 1.0:
+        if mf >= 0 and ft["move3"] > -0.3:
+            pump += 6
+            rp.append(f"OI يرتفع {oi:+.1f}%: مراكز جديدة تتراكم")
+        elif mf < 0 and ft["move3"] < 0.3:
+            dump += 6
+            rd.append(f"OI يرتفع {oi:+.1f}%: مراكز بيع جديدة")
+    if fund is not None:
+        if fund < -0.05:
+            pump += 6
+            rp.append(f"Funding سالب {fund:+.3f}%: وقود Short Squeeze")
+        elif fund > 0.06:
+            dump += 6
+            rd.append(f"Funding مرتفع {fund:+.3f}%: Longs مزدحمة")
+    if btc is not None:
+        if btc < -1.5:
+            pump -= 6
+        if btc > 1.5:
+            dump -= 6
+
+    pump, dump = float(np.clip(pump, 0, 99)), float(np.clip(dump, 0, 99))
+    if abs(ma) < 1.2:
+        stage_key, stage = "early", "مبكر ⏳ (قبل الحركة)"
+    elif abs(ma) < 3.0:
+        stage_key, stage = "started", "بدأت 🔥"
+    else:
+        stage_key, stage = "late", "متأخر ⚠️"
+    score = max(pump, dump)
+    if abs(pump - dump) < 8:
+        direction = "VOLATILE"
+    else:
+        direction = "PUMP" if pump > dump else "DUMP"
+    reasons = rp if direction == "PUMP" else rd if direction == "DUMP" else rp[:3] + rd[:3]
+    return {"pump": round(pump), "dump": round(dump), "score": round(score), "direction": direction,
+            "stage": stage, "stage_key": stage_key, "reasons": reasons}
+
+
+def radar_levels(ft, direction):
+    atr, last = ft["atr"], ft["last"]
+    if direction == "PUMP":
+        return {"trigger": max(ft["hi_n"], last), "stop": ft["low6"] - 0.2 * atr,
+                "tp1": last + 2 * atr, "tp2": last + 3.5 * atr}
+    if direction == "DUMP":
+        return {"trigger": min(ft["lo_n"], last), "stop": ft["high6"] + 0.2 * atr,
+                "tp1": last - 2 * atr, "tp2": last - 3.5 * atr}
+    return {"trigger": None, "stop": None, "tp1": None, "tp2": None}
+
+
+def radar_deep(platform, symbol):
+    book, _ = get_futures_orderbook(platform, symbol, 20)
+    cvd = get_real_cvd(platform, symbol)
+    funding, oi = get_futures_funding_oi(platform, symbol)
+    return {"book": book, "cvd": cvd, "funding": funding, "oi": oi}
+
+
+def run_radar(platform, limit_coins, timeframe, deep_n):
+    symbols = SYMBOL_SOURCES[platform](limit_coins)
+    if not symbols:
+        return {"error": f"تعذر جلب قائمة الرموز من {platform} (جرّب منصة تانية).", "rows": []}
+    source = KLINE_SOURCES[platform]
+    btc = get_btc_change()
+    prev = st.session_state.get("radar_prev", {})
+
+    def stage1(sym):
+        try:
+            fr = source(sym, timeframe, 150)
+            ft = radar_features(fr) if fr is not None else None
+            if ft is None:
+                return None
+            return {"symbol": sym, "ft": ft}
+        except Exception:
+            return None
+
+    rows = []
+    progress, status = st.progress(0), st.empty()
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futs = {ex.submit(stage1, s): s for s in symbols}
+        for done, fut in enumerate(as_completed(futs), start=1):
+            progress.progress(done / len(symbols))
+            status.caption(f"مرحلة 1: {futs[fut]} ({done}/{len(symbols)})")
+            r = fut.result()
+            if r:
+                r["s1"] = radar_score(r["ft"], {"btc": btc})
+                rows.append(r)
+    rows.sort(key=lambda r: r["s1"]["score"], reverse=True)
+    top = rows[:deep_n]
+    status.caption(f"مرحلة 2: دفتر أوامر + CVD + OI + Funding لأفضل {len(top)} مرشح...")
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        deeps = list(ex.map(lambda r: radar_deep(platform, r["symbol"]), top))
+    progress.empty()
+    status.empty()
+    out = []
+    now = time.time()
+    for r, d in zip(top, deeps):
+        ctx = dict(d)
+        ctx["btc"] = btc
+        sc = radar_score(r["ft"], ctx)
+        p = prev.get(r["symbol"])
+        delta = sc["score"] - p[1] if p and now - p[0] < 900 else None
+        out.append({"symbol": r["symbol"], "ft": r["ft"], "ctx": ctx, "levels": radar_levels(r["ft"], sc["direction"]),
+                    "price": r["ft"]["last"], "atr_pct": r["ft"]["atr_pct"], "delta": delta, **sc})
+    st.session_state["radar_prev"] = {**prev, **{o["symbol"]: (now, o["score"]) for o in out}}
+    out.sort(key=lambda o: (o["stage_key"] == "late", -o["score"]))
+    return {"error": None, "rows": out, "platform": platform, "tf": timeframe, "scanned": len(rows),
+            "ts": now_cairo().strftime("%H:%M:%S"), "btc": btc}
+
+
+def radar_log_alerts(rows, exchange, min_score):
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(minutes=30)).isoformat()
+    n = 0
+    with db() as conn:
+        for r in rows:
+            if r["direction"] == "VOLATILE" or r["stage_key"] == "late" or r["score"] < min_score:
+                continue
+            dup = conn.execute("SELECT 1 FROM radar_log WHERE exchange=? AND symbol=? AND created_at>=? LIMIT 1",
+                               (exchange, r["symbol"], cutoff)).fetchone()
+            if dup:
+                continue
+            conn.execute("INSERT INTO radar_log (created_at,exchange,symbol,direction,score,stage,price,atr_pct) "
+                         "VALUES (?,?,?,?,?,?,?,?)",
+                         (now.isoformat(), exchange, r["symbol"], r["direction"], int(r["score"]),
+                          r["stage_key"], float(r["price"]), float(r["atr_pct"])))
+            n += 1
+    return n
+
+
+def radar_evaluate(limit=40):
+    """يقيس نجاح التنبيهات: Hit لو الحركة المتوقعة (2×ATR، حد أدنى 1%) حصلت قبل حركة عكسية (1.2×ATR، حد أدنى 0.6%) خلال 60 دقيقة."""
+    with db() as conn:
+        rows = conn.execute("SELECT id,created_at,exchange,symbol,direction,price,atr_pct FROM radar_log "
+                            "WHERE outcome='OPEN' ORDER BY id ASC LIMIT ?", (limit,)).fetchall()
+    now = datetime.now(timezone.utc)
+    due = []
+    for r in rows:
+        try:
+            ts = _parse_dt(r[1])
+        except Exception:
+            continue
+        if (now - ts).total_seconds() >= 180 and r[2] in KLINE_SOURCES:
+            due.append((r, ts))
+    if not due:
+        return 0
+    jobs = {(r[2], r[3]) for r, _ in due}
+
+    def fetch(k):
+        try:
+            return k, KLINE_SOURCES[k[0]](k[1], "1m", 500)
+        except Exception:
+            return k, None
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        frames = dict(ex.map(fetch, list(jobs)))
+    updates = 0
+    for r, ts in due:
+        sid, _, ex_name, sym, direction, price, atr_pct = r
+        fr = frames.get((ex_name, sym))
+        if fr is None or fr.empty:
+            continue
+        t = pd.to_numeric(fr["time"], errors="coerce").to_numpy(float)
+        t = np.where(t > 1e12, t / 1000, t)
+        hi, lo = fr["high"].to_numpy(float), fr["low"].to_numpy(float)
+        tgt = max(1.0, 2 * atr_pct) / 100
+        adv = max(0.6, 1.2 * atr_pct) / 100
+        t0 = ts.timestamp()
+        mfe = mae = 0.0
+        outcome = None
+        for k in range(len(t)):
+            if t[k] <= t0 or t[k] > t0 + 3600:
+                continue
+            if direction == "PUMP":
+                fav, bad = hi[k] / price - 1, 1 - lo[k] / price
+            else:
+                fav, bad = 1 - lo[k] / price, hi[k] / price - 1
+            mfe, mae = max(mfe, fav), max(mae, bad)
+            if bad >= adv:
+                outcome = "MISS"
+                break
+            if fav >= tgt:
+                outcome = "HIT"
+                break
+        if outcome is None and (now - ts).total_seconds() >= 3600:
+            outcome = "NEUTRAL"
+        if outcome:
+            with db() as conn:
+                conn.execute("UPDATE radar_log SET outcome=?,mfe=?,mae=?,closed_at=? WHERE id=? AND outcome='OPEN'",
+                             (outcome, mfe * 100, mae * 100, now.isoformat(), sid))
+            updates += 1
+    return updates
+
+
+def render_radar_card(item, key, platform, tg_min):
+    d = item["direction"]
+    tone = {"PUMP": "up", "DUMP": "down", "VOLATILE": "warn"}[d]
+    label = {"PUMP": "🚀 PUMP محتمل", "DUMP": "🔻 DUMP محتمل", "VOLATILE": "⚡ تحرك عنيف (الاتجاه غير محسوم)"}[d]
+    stage_tone = {"early": "up", "started": "warn", "late": "down"}[item["stage_key"]]
+    with st.container(border=True):
+        top_l, top_r = st.columns([4, 1])
+        with top_l:
+            delta_txt = ""
+            if item.get("delta") is not None and abs(item["delta"]) >= 3:
+                delta_txt = badge(f"{'↑' if item['delta'] > 0 else '↓'} {item['delta']:+.0f} عن الفحص السابق", "info")
+            st.markdown(f"### {item['symbol']} " + badge(label, tone) + badge(item["stage"], stage_tone) + delta_txt,
+                        unsafe_allow_html=True)
+        with top_r:
+            st.metric("Score", f"{item['score']}/100")
+        score_bar(item["score"], tone)
+        ft, ctx = item["ft"], item["ctx"]
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Pump", f"{item['pump']}")
+        m2.metric("Dump", f"{item['dump']}")
+        m3.metric("حجم x", f"{ft['vr3']:.1f}")
+        m4.metric("تدفق أموال", f"{ft['mf']:+.2f}")
+        m5.metric("حركة (ATR)", f"{ft['move_atr']:+.1f}")
+        chips = ""
+        chips += badge(f"دفتر {ctx['book']:+.0f}%", "up" if ctx["book"] > 0 else "down") if ctx.get("book") is not None else ""
+        chips += badge(f"CVD {ctx['cvd']:+.0f}%", "up" if ctx["cvd"] > 0 else "down") if ctx.get("cvd") is not None else ""
+        chips += badge(f"OI {ctx['oi']:+.1f}%", "info") if ctx.get("oi") is not None else ""
+        chips += badge(f"Funding {ctx['funding']:+.3f}%", "warn") if ctx.get("funding") is not None else ""
+        chips += badge("انضغاط تذبذب", "info") if ft["squeeze"] else ""
+        if chips:
+            st.markdown(chips, unsafe_allow_html=True)
+        if item["reasons"]:
+            st.caption("الأسباب: " + " • ".join(item["reasons"][:6]))
+        lv = item["levels"]
+        if lv["trigger"] is not None:
+            st.caption(f"🎯 تأكيد الدخول: {'إغلاق فوق' if d == 'PUMP' else 'إغلاق تحت'} {lv['trigger']:.8g} | "
+                       f"إبطال: {lv['stop']:.8g} | أهداف ATR: {lv['tp1']:.8g} / {lv['tp2']:.8g}")
+        if st.button("📡 أرسل إلى Telegram", key=f"rd_tg_{key}"):
+            ok, msg = send_telegram(format_radar_telegram(item, platform))
+            st.success(msg) if ok else st.error(msg)
+
+
+def format_radar_telegram(item, platform):
+    d = {"PUMP": "🚀 PUMP محتمل", "DUMP": "🔻 DUMP محتمل", "VOLATILE": "⚡ تحرك عنيف"}[item["direction"]]
+    lv = item["levels"]
+    lines = [f"{d} — {item['symbol']} ({platform})", f"⭐ Score: {item['score']}/100 | {item['stage']}",
+             f"💵 السعر: {item['price']:.8g}"]
+    if lv["trigger"] is not None:
+        lines.append(f"🎯 تأكيد: {lv['trigger']:.8g} | ⛔ إبطال: {lv['stop']:.8g}")
+        lines.append(f"✅ {lv['tp1']:.8g} / {lv['tp2']:.8g}")
+    lines.append("الأسباب: " + " • ".join(item["reasons"][:5]))
+    lines.append("⚠️ تنبيه بحثي وليس نصيحة مالية\n@WHYNOTBLY7")
+    return "\n".join(lines)
+
+
 # ============================ MEXC Up/Down (5m / 15m) — لحظي ============================
-# قواعد MEXC (من صفحة المساعدة الرسمية): Up يكسب لو سعر التسوية > Baseline، ولو يساوي أو أقل يكسب Down.
-# سعر التسوية بيتحسب من أسعار Index لحظية متتالية في آخر دقيقة قبل الانتهاء (يعني متوسط آخر دقيقة تقريبًا).
-# الـ Payout وسعر Baseline ("To Beat") بتتكتب من شاشة المنصة لأن مفيش API عام مؤكد ليهم.
+# قواعد MEXC: Up يكسب لو سعر التسوية > Baseline، ولو يساوي أو أقل يكسب Down.
+# التسوية = متوسط أسعار Index في آخر دقيقة قبل الانتهاء.
+# V24: مؤشرات قائدة (دفتر أوامر + CVD حقيقي + فرق سعر البورصات الكبيرة عن Index + زخم) بتتحرك قبل Index بثواني.
 PM_PRIOR = np.array([1.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 PM_NAMES = ["z", "z_late", "mom3", "rsi", "ema", "cvd", "volr", "bias"]
+
+LEAD_NAMES = ["ob", "cvd", "spread", "mom"]
+LEAD_LABELS = ["ضغط دفتر الأوامر", "تدفق الصفقات (CVD حقيقي)", "فرق سعر البورصات عن Index", "زخم البورصات الكبيرة"]
+LEAD_PRIOR = np.array([0.35, 0.50, 0.60, 0.30])
+LEAD_W = {
+    "ob": {"BINANCE": 1.0, "BYBIT": 0.8, "OKX": 0.5},
+    "cvd": {"BINANCE": 1.0, "BYBIT": 0.8, "OKX": 0.5},
+    "sp": {"BINANCE": 1.0, "BYBIT": 0.8, "OKX": 0.6, "COINBASE": 0.6},
+}
 
 
 def pm_init():
@@ -1181,7 +1704,10 @@ def pm_init():
             id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, horizon INTEGER, window_start REAL,
             decision_min REAL, start_price REAL, price_now REAL, p_up REAL, side TEXT,
             payout_up REAL, payout_down REAL, ev REAL, features TEXT, outcome TEXT DEFAULT 'OPEN',
-            end_price REAL, correct INTEGER, model_correct INTEGER, pnl REAL)""")
+            end_price REAL, correct INTEGER, model_correct INTEGER, pnl REAL, lead TEXT)""")
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(pm_predictions)")}
+        if "lead" not in cols:
+            conn.execute("ALTER TABLE pm_predictions ADD COLUMN lead TEXT")
         conn.execute("CREATE TABLE IF NOT EXISTS pm_model (id INTEGER PRIMARY KEY, weights TEXT, n_updates INTEGER, updated_at TEXT)")
 
 
@@ -1189,25 +1715,31 @@ def _sig(x):
     return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
 
 
-def pm_load(horizon):
-    import json
+def pm_load_vec(key, prior):
     with db() as conn:
-        row = conn.execute("SELECT weights, n_updates FROM pm_model WHERE id=?", (horizon,)).fetchone()
+        row = conn.execute("SELECT weights, n_updates FROM pm_model WHERE id=?", (key,)).fetchone()
     if row:
         try:
             w = np.array(json.loads(row[0]), dtype=float)
-            if len(w) == len(PM_PRIOR):
+            if len(w) == len(prior):
                 return w, int(row[1])
         except Exception:
             pass
-    return PM_PRIOR.copy(), 0
+    return prior.copy(), 0
+
+
+def pm_save_vec(key, w, n_updates):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO pm_model (id, weights, n_updates, updated_at) VALUES (?,?,?,?)",
+                     (key, json.dumps([float(v) for v in w]), int(n_updates), datetime.now(timezone.utc).isoformat()))
+
+
+def pm_load(horizon):
+    return pm_load_vec(horizon, PM_PRIOR)
 
 
 def pm_save(horizon, w, n_updates):
-    import json
-    with db() as conn:
-        conn.execute("INSERT OR REPLACE INTO pm_model (id, weights, n_updates, updated_at) VALUES (?,?,?,?)",
-                     (horizon, json.dumps([float(v) for v in w]), int(n_updates), datetime.now(timezone.utc).isoformat()))
+    pm_save_vec(horizon, w, n_updates)
 
 
 def _pm_norm(frame):
@@ -1260,6 +1792,154 @@ def get_live_index(symbol="BTC_USDT"):
             return px, "Bybit Index (بديل)", time.time() - t_start
     return None, "تعذر جلب السعر اللحظي", time.time() - t_start
 
+
+# ---------------------- المؤشرات القائدة ----------------------
+
+def lead_fetch():
+    """يجلب كل البيانات بالتوازي (7 طلبات) — بيرجع (raw, latency)."""
+    jobs = {
+        "bn_book": ("https://fapi.binance.com/fapi/v1/depth", {"symbol": "BTCUSDT", "limit": 50}),
+        "bn_tr": ("https://fapi.binance.com/fapi/v1/aggTrades", {"symbol": "BTCUSDT", "limit": 1000}),
+        "by_book": ("https://api.bybit.com/v5/market/orderbook", {"category": "linear", "symbol": "BTCUSDT", "limit": 50}),
+        "by_tr": ("https://api.bybit.com/v5/market/recent-trade", {"category": "linear", "symbol": "BTCUSDT", "limit": 1000}),
+        "okx_book": ("https://www.okx.com/api/v5/market/books", {"instId": "BTC-USDT-SWAP", "sz": 50}),
+        "okx_tr": ("https://www.okx.com/api/v5/market/trades", {"instId": "BTC-USDT-SWAP", "limit": 500}),
+        "cb": ("https://api.exchange.coinbase.com/products/BTC-USD/ticker", None),
+    }
+    t0 = time.time()
+
+    def one(k):
+        u, p = jobs[k]
+        return k, api_json(u, p, retries=0, timeout=2.5)
+
+    with ThreadPoolExecutor(max_workers=7) as ex:
+        raw = dict(ex.map(one, list(jobs)))
+    return raw, time.time() - t0
+
+
+def _lvls(rows, n=50):
+    out = []
+    for x in (rows or [])[:n]:
+        try:
+            out.append((float(x[0]), float(x[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
+
+def _imb(bids, asks):
+    """اختلال دفتر الأوامر % بوزن أقرب مستويات أكتر (وزن = 1/(1+rank/10))."""
+    wb = sum(q / (1 + i / 10) for i, (_, q) in enumerate(bids))
+    wa = sum(q / (1 + i / 10) for i, (_, q) in enumerate(asks))
+    tot = wb + wa
+    return (wb - wa) / tot * 100 if tot > 0 else None
+
+
+def _cvd_windows(trades):
+    trades = [t for t in trades if t[0] > 0]
+    if not trades:
+        return {"fast": None, "slow": None, "cover": 0.0}
+    ref = max(t[0] for t in trades)
+    out = {"cover": (ref - min(t[0] for t in trades)) / 1000}
+    for name, win in (("fast", 20), ("slow", 90)):
+        cut = ref - win * 1000
+        sel = [t for t in trades if t[0] >= cut]
+        buy = sum(q for _, q, b in sel if b)
+        sell = sum(q for _, q, b in sel if not b)
+        tot = buy + sell
+        out[name] = (buy - sell) / tot * 100 if tot > 0 and len(sel) >= 5 else None
+    return out
+
+
+def parse_lead(raw):
+    venues = {}
+
+    def add(name, bids, asks, trades):
+        mid = None
+        if bids and asks:
+            mid = (max(p for p, _ in bids) + min(p for p, _ in asks)) / 2
+        cv = _cvd_windows(trades) if trades else {"fast": None, "slow": None, "cover": 0.0}
+        venues[name] = {"mid": mid, "imb": _imb(bids, asks) if bids and asks else None,
+                        "fast": cv["fast"], "slow": cv["slow"], "cover": cv["cover"]}
+
+    b = raw.get("bn_book")
+    t = raw.get("bn_tr")
+    if isinstance(b, dict) and b.get("bids"):
+        trades = [(safe_float(x.get("T")), safe_float(x.get("q")), not x.get("m")) for x in t] if isinstance(t, list) else []
+        add("BINANCE", _lvls(b.get("bids")), _lvls(b.get("asks")), trades)
+    b = ((raw.get("by_book") or {}).get("result") or {})
+    t = ((raw.get("by_tr") or {}).get("result") or {}).get("list") or []
+    if b.get("b"):
+        trades = [(safe_float(x.get("time")), safe_float(x.get("size")), x.get("side") == "Buy") for x in t]
+        add("BYBIT", _lvls(b.get("b")), _lvls(b.get("a")), trades)
+    b = ((raw.get("okx_book") or {}).get("data") or [{}])
+    b = b[0] if b else {}
+    t = (raw.get("okx_tr") or {}).get("data") or []
+    if b.get("bids"):
+        trades = [(safe_float(x.get("ts")), safe_float(x.get("sz")), x.get("side") == "buy") for x in t]
+        add("OKX", _lvls(b.get("bids")), _lvls(b.get("asks")), trades)
+    cb = raw.get("cb")
+    if isinstance(cb, dict):
+        bid, ask, price = safe_float(cb.get("bid")), safe_float(cb.get("ask")), safe_float(cb.get("price"))
+        mid = (bid + ask) / 2 if bid > 0 and ask > 0 else price
+        if mid > 0:
+            venues["COINBASE"] = {"mid": mid, "imb": None, "fast": None, "slow": None, "cover": 0.0}
+    return venues
+
+
+def lead_compute(venues, px, ss, now):
+    """يحوّل بيانات البورصات لـ 4 مؤشرات في [-1, +1]. فرق السعر بيتعدّل بخط أساس (Basis) آخر 15 دقيقة."""
+    hist = ss.setdefault("pm_lead_hist", {})
+    acc = {k: [0.0, 0.0] for k in ("ob", "cvd", "sp", "mom")}
+    rows, calibrating, cal_have = [], False, 0
+    for name, d in venues.items():
+        mid = d.get("mid")
+        sp = sp_adj = mom_bps = None
+        if mid and px:
+            sp = (mid - px) / px * 1e4
+            h = hist.setdefault(name, [])
+            base_pts = [s for ts, s, _ in h if ts <= now - 15]
+            if len(base_pts) >= 20:
+                sp_adj = sp - float(np.median(base_pts))
+            else:
+                calibrating = True
+                cal_have = max(cal_have, len(base_pts))
+            past = [(ts, m) for ts, _, m in h if ts <= now - 10]
+            if past and now - past[-1][0] <= 25:
+                mom_bps = (mid - past[-1][1]) / mid * 1e4
+            h.append((now, sp, mid))
+            while h and h[0][0] < now - 900:
+                h.pop(0)
+        w = LEAD_W["ob"].get(name)
+        if w and d.get("imb") is not None:
+            acc["ob"][0] += w * float(np.tanh(d["imb"] / 30))
+            acc["ob"][1] += w
+        w = LEAD_W["cvd"].get(name)
+        if w and (d.get("fast") is not None or d.get("slow") is not None):
+            val = (0.6 * np.tanh(d["fast"] / 40) if d.get("fast") is not None else 0.0) + \
+                  (0.4 * np.tanh(d["slow"] / 40) if d.get("slow") is not None else 0.0)
+            acc["cvd"][0] += w * float(val)
+            acc["cvd"][1] += w
+        w = LEAD_W["sp"].get(name)
+        if w and sp_adj is not None:
+            acc["sp"][0] += w * float(np.tanh(sp_adj / 2.0))
+            acc["sp"][1] += w
+        if w and mom_bps is not None:
+            acc["mom"][0] += w * float(np.tanh(mom_bps / 2.0))
+            acc["mom"][1] += w
+        rows.append({
+            "المنصة": name, "السعر": round(mid, 2) if mid else None,
+            "فرق عن Index (bps)": round(sp, 2) if sp is not None else None,
+            "الفرق المعدّل (bps)": round(sp_adj, 2) if sp_adj is not None else None,
+            "دفتر الأوامر %": round(d["imb"], 1) if d.get("imb") is not None else None,
+            "CVD 20ث %": round(d["fast"], 1) if d.get("fast") is not None else None,
+            "CVD 90ث %": round(d["slow"], 1) if d.get("slow") is not None else None,
+        })
+    L = [acc[k][0] / acc[k][1] if acc[k][1] > 0 else 0.0 for k in ("ob", "cvd", "sp", "mom")]
+    return {"L": L, "rows": rows, "n": len(venues), "calibrating": calibrating, "cal_have": cal_have}
+
+
+# ---------------------- نموذج الاحتمال ----------------------
 
 def pm_eff_remaining(r):
     """التباين الفعّال بالدقائق: السعر النهائي = متوسط آخر دقيقة، مش آخر Tick."""
@@ -1386,9 +2066,8 @@ def pm_window_start(H, offset, now=None):
     return ((now - offset * 60) // W_sec) * W_sec + offset * 60
 
 
-def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_sec, auto_log):
-    """حالة لحظية: سعر Index الحالي + Baseline + احتمال + قرار. بيتحدث كل ثانيتين."""
-    import json
+def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_sec, auto_log, opts):
+    """حالة لحظية: Index الحالي + Baseline + مؤشرات قائدة + احتمال + قرار. بيتحدث كل ثانيتين."""
     ss = st.session_state
     px, src, latency = get_live_index()
     if px is None:
@@ -1424,37 +2103,75 @@ def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_
     remaining = H * 60 - (now - t0_time)
     if e < 0.1:
         return {"error": "الدورة لسه بادئة؛ استنى ثواني."}
-    x, e, _ = pm_features(frame, i, t0, H, e=e, live_price=px, start=base)
-    w, n_upd = pm_load(H)
-    p_up = float(_sig(x @ w))
-    side, ev, conf = pm_decide(p_up, payout_up, payout_down, min_edge, min_conf)
-    closed = remaining < cutoff_sec
-    running_avg = None
+
+    # --- السعر الفعّال: في آخر دقيقة جزء من متوسط التسوية اتحدد فعلًا ---
+    running_avg, eff_px = None, px
     if remaining <= 60:
         pts = [p for ts, p in ticks if ts >= t0_time + W_sec - 60]
-        running_avg = float(np.mean(pts)) if len(pts) >= 3 else None
+        if len(pts) >= 3:
+            running_avg = float(np.mean(pts))
+            a = 1 - remaining / 60.0
+            eff_px = a * running_avg + (1 - a) * px
+
+    # --- المؤشرات القائدة ---
+    lead, adj = None, 0.0
+    if opts.get("use_lead", True):
+        cached = ss.get("pm_lead_cache")
+        if cached and now - cached[0] < 1.0:
+            venues, lat_l = cached[1], cached[2]
+        else:
+            raw, lat_l = lead_fetch()
+            venues = parse_lead(raw)
+            ss["pm_lead_cache"] = (now, venues, lat_l)
+        lead = lead_compute(venues, px, ss, now)
+        lead["lat"] = lat_l
+        wl, nl = pm_load_vec(100 + H, LEAD_PRIOR)
+        Lv = np.array(lead["L"], dtype=float)
+        mult = float(opts.get("lead_mult", 1.0))
+        adj = float((Lv * wl).sum() * mult)
+        lead.update({"adj": adj, "n_updates": nl, "w": wl, "mult": mult})
+
+    x, e, _ = pm_features(frame, i, t0, H, e=e, live_price=eff_px, start=base)
+    w, n_upd = pm_load(H)
+    p_base = float(_sig(x @ w))
+    p_up = float(_sig(float(x @ w) + adj))
+    side, ev, conf = pm_decide(p_up, payout_up, payout_down, min_edge, min_conf)
+    gate = None
+    if side != "SKIP" and lead and lead["n"] > 0 and opts.get("require_agree", True):
+        d = 1 if side == "UP" else -1
+        if abs(adj) >= 0.25 and np.sign(adj) != d:
+            side, gate = "SKIP", "تعارض مع المؤشرات القائدة"
+    if side != "SKIP" and latency > opts.get("max_latency", 2.5):
+        side, gate = "SKIP", "تأخر بيانات السعر"
+    closed = remaining < cutoff_sec
+    stake = 0.0
+    if side != "SKIP":
+        b = payout_up if side == "UP" else payout_down
+        kelly = (conf * b - (1 - conf)) / b
+        stake = float(np.clip(kelly * 0.25, 0, 0.05))
     logged = False
     if auto_log and side != "SKIP" and not closed:
         with db() as conn:
             dup = conn.execute("SELECT 1 FROM pm_predictions WHERE horizon=? AND window_start=?", (H, t0_time)).fetchone()
             if not dup:
+                lead_js = json.dumps({"L": [float(v) for v in lead["L"]], "mult": lead["mult"]}) if lead else None
                 conn.execute("""INSERT INTO pm_predictions (created_at,horizon,window_start,decision_min,start_price,price_now,
-                    p_up,side,payout_up,payout_down,ev,features) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    p_up,side,payout_up,payout_down,ev,features,lead) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                              (datetime.now(timezone.utc).isoformat(), H, t0_time, e, base, px, p_up, side,
-                              payout_up, payout_down, ev, json.dumps([float(v) for v in x])))
+                              payout_up, payout_down, ev, json.dumps([float(v) for v in x]), lead_js))
                 logged = True
     chart = [(datetime.fromtimestamp(ts, CAIRO).strftime("%H:%M:%S"), p) for ts, p in ticks if ts >= t0_time]
-    return {"p_up": p_up, "side": side, "ev": ev, "conf": conf, "e": e, "remaining": remaining, "base": base,
-            "base_src": base_src, "px": px, "src": src, "latency": latency, "z": float(x[0]), "closed": closed,
-            "n_updates": n_upd, "n_ticks": len(ticks), "running_avg": running_avg, "logged": logged,
+    return {"p_up": p_up, "p_base": p_base, "side": side, "ev": ev, "conf": conf, "e": e, "remaining": remaining,
+            "base": base, "base_src": base_src, "px": px, "src": src, "latency": latency, "z": float(x[0]),
+            "closed": closed, "n_updates": n_upd, "n_ticks": len(ticks), "running_avg": running_avg,
+            "eff_px": eff_px, "logged": logged, "lead": lead, "gate": gate, "stake": stake,
             "ends_at": datetime.fromtimestamp(t0_time + W_sec, CAIRO).strftime("%H:%M:%S"),
-            "now": now_cairo().strftime("%H:%M:%S"), "chart": chart, "window_start": t0_time}
+            "now": now_cairo().strftime("%H:%M:%S"), "chart": chart, "window_start": t0_time, "H": H}
 
 
 def pm_resolve_open():
-    import json
     with db() as conn:
-        rows = conn.execute("SELECT id,horizon,window_start,start_price,side,payout_up,payout_down,p_up,features "
+        rows = conn.execute("SELECT id,horizon,window_start,start_price,side,payout_up,payout_down,p_up,features,lead "
                             "FROM pm_predictions WHERE outcome='OPEN'").fetchall()
     now = time.time()
     due = [r for r in rows if r[2] + r[1] * 60 + 20 <= now]
@@ -1466,407 +2183,4 @@ def pm_resolve_open():
     t = frame["time"].to_numpy(float)
     ticks = st.session_state.get("pm_ticks", [])
     done = 0
-    for sid, H, ws, start, side, pu, pd_, p_up, feats in due:
-        end_t = ws + H * 60
-        pts = [p for ts, p in ticks if end_t - 60 <= ts <= end_t]
-        if len(pts) >= 8:
-            settle = float(np.mean(pts))  # متوسط Ticks حقيقية جمعها التطبيق في آخر دقيقة
-        else:
-            idx = np.where(np.abs(t - (ws + (H - 1) * 60)) < 1)[0]
-            if len(idx) == 0:
-                if now - ws > 7200:
-                    with db() as conn:
-                        conn.execute("UPDATE pm_predictions SET outcome='EXPIRED' WHERE id=?", (sid,))
-                continue
-            k = idx[0]
-            settle = float((frame["open"].iloc[k] + frame["high"].iloc[k] + frame["low"].iloc[k] + frame["close"].iloc[k]) / 4)
-        up = settle > start  # المساواة = Down
-        model_correct = int((p_up > 0.5) == up)
-        correct = int((side == "UP") == up) if side != "SKIP" else None
-        pnl = ((pu if side == "UP" else pd_) if correct else -1.0) if side != "SKIP" else 0.0
-        w, n_upd = pm_load(H)
-        w = pm_online_step(w, np.array(json.loads(feats), dtype=float), 1.0 if up else 0.0)
-        pm_save(H, w, n_upd + 1)
-        with db() as conn:
-            conn.execute("UPDATE pm_predictions SET outcome=?,end_price=?,correct=?,model_correct=?,pnl=? WHERE id=?",
-                         ("UP" if up else "DOWN", settle, correct, model_correct, pnl, sid))
-        done += 1
-    return done
-
-
-# ============================ Init ============================
-
-try:
-    init_db()
-    pm_init()
-except Exception as _db_exc:
-    st.warning(f"تحذير قاعدة البيانات: {_db_exc}")
-
-monitor_status = get_monitor_status()
-
-# ============================ Sidebar ============================
-
-with st.sidebar:
-    st.markdown("## 🎛️ إعدادات الماسح")
-    platform = st.selectbox("منصة العقود الآجلة", ["KUCOIN", "BINANCE", "BYBIT", "MEXC"])
-    st.caption("لو Binance/Bybit مش بيجيبوا بيانات: سيرفرك غالبًا محجوب جغرافيًا، جرّب KUCOIN أو MEXC.")
-    st.markdown("### اتجاه الصفقة")
-    want_long = st.checkbox("🚀 LONG", value=True)
-    want_short = st.checkbox("📉 SHORT", value=True)
-    st.markdown("### الفلاتر")
-    use_fvg = st.checkbox("FVG (خصم 8 لو مفيش)", value=False)
-    mtf_filter = st.checkbox("تأكيد الاتجاه متعدد الأطر (MTF)", value=False)
-    btc_filter = st.checkbox("فلتر اتجاه BTC", value=True)
-    funding_filter = st.checkbox("فلتر Funding Futures", value=False)
-    wall_filter = st.checkbox("دفتر أوامر Futures (حسب المنصة)", value=False)
-    killzone = st.checkbox("نوافذ السيولة التقريبية (+5)", value=True)
-    confirm_exchanges = st.checkbox("فحص توافر الرمز على 5 منصات Spot", value=False)
-    st.markdown("### التصفية")
-    min_score = st.slider("أقل Score", 0, 95, 60)
-    show_closest = st.checkbox("📌 لو مفيش إشارات، اعرض أقرب 10", value=True)
-    limit_coins = st.slider("عدد العملات للفحص", 10, 100, 40, step=5)
-    timeframe = st.selectbox("الإطار الزمني", ["1m", "3m", "5m", "15m", "1h"], index=2)
-    bars_limit = st.select_slider("عدد الشموع", options=[100, 250, 500, 1000], value=500)
-    st.markdown("### إدارة المخاطر")
-    capital_usdt = st.number_input("رأس المال USDT", min_value=10.0, value=100.0, step=10.0)
-    risk_pct = st.number_input("المخاطرة لكل صفقة %", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
-    fee_pct = st.number_input("رسوم تقديرية دخول+خروج %", min_value=0.0, max_value=2.0, value=0.10, step=0.01)
-    slippage_pct = st.number_input("انزلاق تقديري %", min_value=0.0, max_value=2.0, value=0.05, step=0.01)
-    st.markdown("### Telegram")
-    telegram_enabled = st.checkbox("إرسال تلقائي بعد كل فحص", value=False)
-    tg_min_score = st.slider("أقل Score للإرسال", 50, 95, 70)
-    _tok = _secret("TELEGRAM_BOT_TOKEN")
-    _chat = _secret("TELEGRAM_CHANNEL_ID") or _secret("TELEGRAM_CHAT_ID")
-    if _tok and _chat:
-        st.success("✅ Telegram متوصل")
-    else:
-        st.error("❌ Telegram ناقص: " + ("التوكن " if not _tok else "") + ("الشات " if not _chat else ""))
-        st.caption('Settings > Secrets:\nTELEGRAM_BOT_TOKEN = "..."\nTELEGRAM_CHANNEL_ID = "@channel"')
-    if st.button("📡 اختبار Telegram"):
-        ok, message = send_telegram("🧪 اختبار BLY7TRADER — الاتصال يعمل.")
-        st.success(message) if ok else st.error(message)
-    try:
-        _prof = learning_profile()
-        st.caption(f"🧠 {_prof['trades']} صفقة محسومة | Win Rate {_prof['win_rate']:.1f}% | تعديل {_prof['adjustment']:+d}")
-        if _prof["trades"] < 10:
-            st.caption(f"التعلم يبدأ بعد {10 - _prof['trades']} صفقات محسومة كمان.")
-    except Exception as _e:
-        st.caption(f"تعذر قراءة التعلم: {_e}")
-
-settings = {
-    "want_long": want_long, "want_short": want_short, "use_fvg": use_fvg, "mtf_filter": mtf_filter,
-    "btc_filter": btc_filter, "funding_filter": funding_filter, "wall_filter": wall_filter,
-    "killzone": killzone, "confirm_exchanges": confirm_exchanges, "min_score": min_score,
-    "capital_usdt": capital_usdt, "risk_pct": risk_pct, "fee_pct": fee_pct,
-    "slippage_pct": slippage_pct, "timeframe": timeframe,
-}
-
-# ============================ Main navigation ============================
-
-section = st.radio(
-    "القسم",
-    ["🔎 الماسح", "📉 DUMP / SHORT", "🚀 DEX", "📊 سجل الإشارات", "🧠 الذاكرة والتعلّم", "🧪 اختبار تاريخي", "🎯 MEXC Up/Down"],
-    horizontal=True,
-)
-
-if section in ("🔎 الماسح", "📉 DUMP / SHORT"):
-    is_dump = section == "📉 DUMP / SHORT"
-    state_key = "scan_dump" if is_dump else "scan_main"
-    st.subheader("📉 ماسح SHORT" if is_dump else "🔎 ماسح السوق")
-    st.caption(f"المصدر: {platform} USDT-M Futures | TF: {timeframe} | الشموع: {bars_limit} | العملات: {limit_coins} | "
-               f"أقل Score: {min_score} | توقيت القاهرة: {now_cairo().strftime('%H:%M')}")
-    if st.button("📉 افحص فرص SHORT" if is_dump else "🔍 افحص السوق الآن", type="primary"):
-        result = run_scan(platform, settings, limit_coins, timeframe, bars_limit, is_dump)
-        st.session_state[state_key] = result
-        if not result.get("error"):
-            saved = save_signals(result["signals"], platform)
-            if saved:
-                st.toast(f"تم حفظ {saved} إشارة في السجل")
-            if telegram_enabled and result["signals"]:
-                sent, errors, total = send_signal_batch(result["signals"], platform, tg_min_score)
-                if sent:
-                    st.success(f"📡 تم إرسال {sent} إشارة إلى تليجرام")
-                if errors:
-                    st.error(f"تعذر إرسال بعض الإشارات: {errors[-1]}")
-                if total == 0:
-                    st.info(f"مفيش إشارات بسكور ≥ {tg_min_score} للإرسال.")
-    render_scan_results(state_key, min_score, show_closest)
-
-elif section == "🚀 DEX":
-    st.subheader("🚀 ماسح DEX — BNB Smart Chain")
-    c1, c2, c3 = st.columns(3)
-    dex_vol = c1.number_input("أقل حجم 5 دقائق $", min_value=0.0, value=5000.0, step=1000.0)
-    dex_chg = c2.number_input("أقل تغير 5 دقائق %", min_value=0.0, value=5.0, step=1.0)
-    dex_liq = c3.number_input("أقل سيولة $", min_value=0.0, value=15000.0, step=5000.0)
-    if st.button("🚀 افحص DEX الآن", type="primary"):
-        with st.spinner("بيجمع أزواج BSC..."):
-            passed, near = scan_dex(dex_vol, dex_chg, dex_liq)
-        st.session_state["dex_res"] = {"passed": passed, "near": near, "ts": now_cairo().strftime("%H:%M:%S")}
-        if telegram_enabled:
-            sent_addr = st.session_state.setdefault("dex_sent", set())
-            for item in passed[:5]:
-                if item["address"] in sent_addr:
-                    continue
-                ok, err = send_telegram(f"🚀 DEX {item['symbol']} على BSC\nالسعر: ${item['price']:.10g}\n"
-                                        f"5m: {item['change_5m']:.2f}%\nحجم 5m: ${item['volume_5m']:,.0f}\n"
-                                        f"السيولة: ${item['liquidity']:,.0f}\n{item['url']}\n@WHYNOTBLY7")
-                if ok:
-                    sent_addr.add(item["address"])
-                else:
-                    st.warning(f"تعذر إرسال {item['symbol']}: {err}")
-    dex_res = st.session_state.get("dex_res")
-    if dex_res:
-        st.caption(f"آخر فحص: {dex_res['ts']}")
-        if dex_res["passed"]:
-            st.success(f"{len(dex_res['passed'])} زوج مطابق")
-            for i, item in enumerate(dex_res["passed"]):
-                render_dex_item(item, f"p{i}")
-        else:
-            st.info("لا توجد أزواج مطابقة للشروط حاليًا. أقرب النتائج:")
-            for i, item in enumerate(dex_res["near"]):
-                render_dex_item(item, f"n{i}")
-
-elif section == "📊 سجل الإشارات":
-    st.subheader("📊 سجل الإشارات المحفوظ")
-    history = load_signal_history(300)
-    if history.empty:
-        st.info("لا توجد إشارات محفوظة بعد. شغّل الماسح أولاً.")
-    else:
-        outcome_filter = st.selectbox("تصفية النتيجة", ["الكل", "OPEN", "WIN", "LOSS", "BREAKEVEN", "EXPIRED"])
-        view = history if outcome_filter == "الكل" else history[history["outcome"] == outcome_filter]
-        show_df(view)
-        st.caption("المتابعة التلقائية كل دقيقة والتطبيق مفتوح. الصفقة لازم يتلمس دخولها الأول، وعند تعارض الوقف والهدف في نفس الشمعة يُحتسب الوقف.")
-
-elif section == "🧠 الذاكرة والتعلّم":
-    st.subheader("🧠 الذاكرة الدائمة — نتائج الصفقات")
-    if st.button("🔄 حدّث المراقبة الآن"):
-        monitor_status = get_monitor_status(force=True)
-    st.caption(f"المراقبة: فُحصت {monitor_status['checked']} صفقة مفتوحة؛ حُسمت {len(monitor_status['resolved'])}."
-               + (f" ⚠️ {monitor_status['error']}" if monitor_status.get("error") else ""))
-    if monitor_status["resolved"]:
-        show_df(pd.DataFrame(monitor_status["resolved"]))
-    profile = learning_profile()
-    a, b, c = st.columns(3)
-    a.metric("صفقات محسومة", profile["trades"])
-    b.metric("Win Rate", f"{profile['win_rate']:.1f}%")
-    c.metric("تعديل السكور المتعلّم", f"{profile['adjustment']:+d}")
-    if profile["by_side"]:
-        st.write("**الأداء حسب الاتجاه**")
-        show_df(pd.DataFrame([{"الاتجاه": k, **v} for k, v in profile["by_side"].items()]))
-    with db() as conn:
-        open_trades = pd.read_sql_query(
-            "SELECT id,created_at,exchange,symbol,side,score FROM signals WHERE outcome='OPEN' ORDER BY id DESC LIMIT 300", conn)
-        all_trades = pd.read_sql_query(
-            "SELECT id,created_at,exchange,symbol,side,score,entry,stop,tp1,tp2,tp3,outcome,pnl_pct,result_source "
-            "FROM signals ORDER BY id DESC LIMIT 500", conn)
-    st.markdown("#### تحديث نتيجة صفقة يدويًا")
-    if not open_trades.empty:
-        options = {f"#{int(r.id)} {r.exchange} {r.symbol} {r.side} | {str(r.created_at)[:16]}": int(r.id)
-                   for r in open_trades.itertuples()}
-        selected = st.selectbox("اختر الإشارة", list(options))
-        choice = st.selectbox("النتيجة", ["WIN", "LOSS", "BREAKEVEN", "OPEN"])
-        if st.button("💾 حفظ النتيجة"):
-            update_trade_outcome(options[selected], choice)
-            st.success("تم الحفظ.")
-            st.rerun()
-    else:
-        st.info("لا توجد صفقات مفتوحة.")
-    st.markdown("#### سجل النتائج")
-    if not all_trades.empty:
-        show_df(all_trades)
-    else:
-        st.info("سيظهر السجل بعد أول فحص.")
-    st.markdown("#### نسخ احتياطي (مهم على Streamlit Cloud)")
-    st.caption("الملفات بتتمسح عند إعادة تشغيل التطبيق، فصدّر السجل دوريًا وارفعه تاني عند الحاجة.")
-    full = load_signal_history(100000)
-    st.download_button("⬇️ تصدير السجل CSV", full.to_csv(index=False).encode("utf-8"),
-                       file_name="bly7trader_signals.csv", mime="text/csv")
-    up = st.file_uploader("استيراد سجل CSV", type=["csv"])
-    if up is not None and st.button("📥 استيراد"):
-        try:
-            added, msg = import_history(pd.read_csv(up))
-            st.success(f"تمت إضافة {added} صفقة.") if msg == "OK" else st.error(msg)
-        except Exception as exc:
-            st.error(f"فشل الاستيراد: {exc}")
-
-elif section == "🧪 اختبار تاريخي":
-    st.subheader("🧪 باكتست بنفس منطق الماسح (بدون فلاتر الشبكة)")
-    st.caption("بيستخدم نفس حساب Score والاتجاه والدخول/الوقف/الأهداف على شموع تاريخية، ويحاكي التنفيذ بنفس قواعد المراقبة.")
-    c1, c2, c3 = st.columns(3)
-    bt_platform = c1.selectbox("المنصة", list(KLINE_SOURCES), index=list(KLINE_SOURCES).index(platform), key="bt_platform")
-    bt_symbol = c2.text_input("الرمز", value=DEFAULT_TEST_SYMBOL[bt_platform], key=f"bt_sym_{bt_platform}")
-    bt_tf = c3.selectbox("الإطار", ["1m", "3m", "5m", "15m", "1h"], index=2, key="bt_tf")
-    c4, c5, c6 = st.columns(3)
-    bt_target = c4.selectbox("الهدف", ["TP1 (1.5R)", "TP2 (2.5R)", "TP3 (3.5R)"], key="bt_target")
-    bt_hold = c5.slider("أقصى مدة احتفاظ (شموع)", 10, 200, 48, key="bt_hold")
-    bt_score = c6.slider("أقل Score للباكتست", 0, 95, int(min_score), key="bt_score")
-    if st.button("▶️ شغّل الباكتست", type="primary"):
-        with st.spinner("بيجلب الشموع ويشغّل الاختبار..."):
-            frame = KLINE_SOURCES[bt_platform](bt_symbol.strip(), bt_tf, 1000)
-            if frame is None or len(frame) < 120:
-                st.session_state["bt_res"] = {"error": "تعذر جلب شموع كافية (راجع صيغة الرمز أو جرّب منصة تانية)."}
-            else:
-                bt_set = dict(settings)
-                bt_set["min_score"] = bt_score
-                bt_set["want_long"], bt_set["want_short"] = True, True
-                trades = run_backtest(frame, bt_set, ["TP1 (1.5R)", "TP2 (2.5R)", "TP3 (3.5R)"].index(bt_target), bt_hold)
-                st.session_state["bt_res"] = {"trades": trades, "bars": len(frame), "label": f"{bt_platform} {bt_symbol} {bt_tf}"}
-    bt = st.session_state.get("bt_res")
-    if bt:
-        if bt.get("error"):
-            st.error(bt["error"])
-        else:
-            trades = bt["trades"]
-            st.caption(f"{bt['label']} | شموع: {bt['bars']}")
-            if trades.empty:
-                st.info("مفيش صفقات عدّت الفلتر. قلّل أقل Score أو جرّب رمز/إطار تاني.")
-            else:
-                done = trades[trades.outcome.isin(["WIN", "LOSS", "TIMEOUT"])]
-                wins, losses = int((done.outcome == "WIN").sum()), int((done.outcome == "LOSS").sum())
-                gross_win = done.loc[done.R > 0, "R"].sum()
-                gross_loss = -done.loc[done.R < 0, "R"].sum()
-                pf = gross_win / gross_loss if gross_loss > 0 else float("inf") if gross_win > 0 else 0
-                equity = done["R"].cumsum()
-                dd = float((equity - equity.cummax()).min()) if len(equity) else 0.0
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("صفقات منفّذة", len(done))
-                m2.metric("رابحة / خاسرة", f"{wins} / {losses}")
-                m3.metric("Win Rate", f"{wins / max(wins + losses, 1) * 100:.1f}%")
-                m4.metric("لم يُفعّل دخولها", int((trades.outcome == "NOFILL").sum()))
-                m5, m6, m7 = st.columns(3)
-                m5.metric("إجمالي R", f"{done['R'].sum():+.2f}")
-                m6.metric("متوسط R (Expectancy)", f"{done['R'].mean():+.3f}" if len(done) else "—")
-                m7.metric("Profit Factor", "∞" if pf == float("inf") else f"{pf:.2f}")
-                st.caption(f"أقصى تراجع: {dd:.2f}R")
-                if len(equity):
-                    st.line_chart(equity.reset_index(drop=True))
-                show_df(trades)
-            st.caption("تنبيه: باكتست على بيانات ماضية لا يضمن الأداء المستقبلي، ولا يشمل Funding ولا فروق السبريد الفعلية.")
-
-elif section == "🎯 MEXC Up/Down":
-    st.subheader("🎯 MEXC Up/Down — دورات 5 و15 دقيقة (BTC) ⚡ لحظي")
-    st.warning("مفيش توقع 100% صح. القسم بيحسب احتمال كل اتجاه من السعر اللحظي ويدخل بس لما فيه ميزة فوق نقطة التعادل، وبيتعلم من نتايجه ويعرض دقته الحقيقية.")
-    st.caption("قواعد MEXC: Up يكسب لو سعر التسوية أعلى من Baseline، ولو يساويه أو أقل يكسب Down. التسوية من متوسط أسعار Index في آخر دقيقة، والنموذج بيحسب ده.")
-    c1, c2, c3 = st.columns(3)
-    pm_h = 5 if c1.selectbox("الدورة", ["5 دقائق", "15 دقيقة"]) == "5 دقائق" else 15
-    pm_pu = c2.number_input("Payout لـ Up (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
-    pm_pd = c3.number_input("Payout لـ Down (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
-    c4, c5, c6 = st.columns(3)
-    pm_edge = c4.slider("أقل ميزة EV للدخول", 0.0, 0.5, 0.08, 0.01)
-    pm_conf = c5.slider("أقل ثقة", 0.50, 0.95, 0.62, 0.01)
-    pm_off = c6.number_input("إزاحة بداية الدورة (دقائق)", min_value=0, max_value=14, value=0, step=1)
-    c7, c8, c9 = st.columns(3)
-    pm_cut = c7.number_input("قفل الدخول قبل النهاية (ثواني)", min_value=0, max_value=120, value=15, step=5)
-    pm_live_on = c8.checkbox("⚡ تحديث لحظي كل ثانيتين", value=True, key="pm_live_on")
-    pm_auto = c9.checkbox("تسجيل تلقائي لأول إشارة في كل دورة", value=True)
-    st.caption(f"نقطة التعادل: Up ≥ {1 / (1 + pm_pu):.1%} | Down ≥ {1 / (1 + pm_pd):.1%} احتمال صح.")
-
-    b1, b2 = st.columns([2, 1])
-    base_in = b1.number_input("Baseline (To Beat) من شاشة MEXC للدورة الحالية", min_value=0.0, value=0.0, step=0.01, format="%.2f")
-    if b2.button("📌 ثبّت للدورة الحالية"):
-        st.session_state["pm_base_manual"] = (pm_window_start(pm_h, pm_off), base_in)
-        st.toast("تم تثبيت Baseline للدورة الحالية فقط")
-
-    _now_pm = time.time()
-    if _now_pm - st.session_state.get("pm_resolve_ts", 0) > 15:
-        st.session_state["pm_resolve_ts"] = _now_pm
-        try:
-            if pm_resolve_open():
-                st.toast("اتحسمت توقعات وتم تحديث النموذج")
-        except Exception as exc:
-            st.caption(f"تعذر حسم التوقعات: {exc}")
-
-    st.markdown("#### 🎯 الدورة الحالية")
-    manual_click = (not pm_live_on) and st.button("🎯 توقّع الآن", type="primary")
-    if pm_live_on or manual_click:
-        live = pm_live_state(pm_h, pm_off, pm_pu, pm_pd, pm_edge, pm_conf, pm_cut, pm_auto)
-        if live.get("error"):
-            st.error(live["error"])
-        else:
-            label = {"UP": "🟢 Up", "DOWN": "🔴 Down", "SKIP": "⏸️ تجاهل"}[live["side"]]
-            if live["closed"]:
-                label = "🔒 الدخول مقفول"
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Index الآن", f"{live['px']:,.2f}", f"{live['px'] - live['base']:+,.2f} عن Baseline")
-            m2.metric("احتمال Up", f"{live['p_up']:.1%}")
-            m3.metric("القرار", label)
-            m4.metric("EV لكل 1$", f"{live['ev']:+.3f}")
-            st.caption(f"⏱️ {live['now']} | باقي {live['remaining']:.0f}ث (تنتهي {live['ends_at']}) | Baseline {live['base']:,.2f} — {live['base_src']} | "
-                       f"المصدر: {live['src']} ({live['latency'] * 1000:.0f}ms) | z={live['z']:+.2f} | تحديثات تعلّم: {live['n_updates']} | Ticks: {live['n_ticks']}")
-            if live["running_avg"] is not None:
-                st.caption(f"متوسط Index في آخر دقيقة حتى الآن: {live['running_avg']:,.2f} (ده اللي بيتحسب عليه سعر التسوية تقريبًا)")
-            if live["logged"]:
-                st.success("📝 اتسجلت إشارة للدورة دي.")
-            if live["side"] == "SKIP" and not live["closed"]:
-                st.info("مفيش ميزة كفاية دلوقتي. التجاهل قرار صح كتير.")
-            if len(live["chart"]) >= 2:
-                chart_df = pd.DataFrame(live["chart"], columns=["t", "السعر"]).set_index("t")
-                chart_df["Baseline"] = live["base"]
-                st.line_chart(chart_df)
-            st.caption("⚠️ تأكد إن الـ Payout وBaseline اللي على شاشتك هما اللي كاتبهم هنا، وإن المنصة لسه بتقبل الدخول.")
-
-    st.markdown("#### 🧠 تدريب وتقييم على التاريخ")
-    if st.button("🧠 درّب وقيّم النموذج"):
-        with st.spinner("بيجلب البيانات ويشغّل اختبار Walk-forward..."):
-            frame, src = get_pm_frame()
-            if frame is None:
-                st.session_state["pm_eval"] = {"error": src}
-            else:
-                X, y, E, W = pm_build_dataset(frame, pm_h, pm_off)
-                if len(y) < 200:
-                    st.session_state["pm_eval"] = {"error": "بيانات قليلة للتدريب."}
-                else:
-                    ev_res = pm_evaluate(X, y, E, W, (pm_pu + pm_pd) / 2, pm_edge, pm_conf)
-                    w_all = pm_fit(X, y)
-                    _, n_old = pm_load(pm_h)
-                    pm_save(pm_h, w_all, n_old)
-                    st.session_state["pm_eval"] = {"eval": ev_res, "src": src, "n": len(y), "w": w_all}
-    pe = st.session_state.get("pm_eval")
-    if pe:
-        if pe.get("error"):
-            st.error(pe["error"])
-        elif pe.get("eval") is None:
-            st.info("عينات الاختبار قليلة؛ زوّد البيانات.")
-        else:
-            r = pe["eval"]
-            st.caption(f"المصدر: {pe['src']} | عينات: {pe['n']} (تدريب {r['n_train']} / اختبار {r['n_test']}) | نسبة Up في الاختبار {r['base_up']:.1%}")
-            show_df(pd.DataFrame([{"النموذج": k, "الدقة": f"{v['accuracy']:.1%}", "Brier (أقل أحسن)": round(v["brier"], 4),
-                                   "صفقات": v["bets"], "فوز الصفقات": f"{v['bet_win_rate']:.1%}",
-                                   "ربح/صفقة": round(v["pnl_per_bet"], 3), "إجمالي": round(v["pnl_total"], 2)}
-                                  for k, v in r["metrics"].items()]))
-            st.write("**الدقة حسب الثقة (اختبار خارج العينة)**")
-            show_df(pd.DataFrame(r["calibration"]))
-            st.write("**الدقة حسب الدقيقة داخل الدورة**")
-            show_df(pd.DataFrame(r["by_elapsed"]))
-            st.write("أوزان النموذج: " + " | ".join(f"{n}={v:+.2f}" for n, v in zip(PM_NAMES, pe["w"])))
-            st.caption("الباكتست بيفترض إن الـ Payout ثابت طول الدورة؛ لو المنصة بتعدّله مع حركة السعر فالأرباح الفعلية هتبقى أقل. القياس الحقيقي هو السجل الحي تحت.")
-
-    st.markdown("#### 📒 السجل والأداء الفعلي (Paper)")
-    with db() as conn:
-        log = pd.read_sql_query("SELECT id,created_at,horizon,decision_min,start_price,p_up,side,ev,outcome,end_price,correct,model_correct,pnl "
-                                "FROM pm_predictions ORDER BY id DESC LIMIT 300", conn)
-    if log.empty:
-        st.info("لسه مفيش توقعات مسجلة. فعّل التحديث اللحظي وسيب التطبيق مفتوح.")
-    else:
-        done_log = log[log.outcome.isin(["UP", "DOWN"])]
-        bets_log = done_log[done_log.side != "SKIP"]
-        a1, a2, a3, a4 = st.columns(4)
-        a1.metric("توقعات محسومة", len(done_log))
-        a2.metric("دقة النموذج", f"{done_log['model_correct'].mean():.1%}" if len(done_log) else "—")
-        a3.metric("فوز الصفقات", f"{bets_log['correct'].mean():.1%}" if len(bets_log) else "—")
-        a4.metric("ربح Paper (وحدات)", f"{done_log['pnl'].sum():+.2f}")
-        st.caption("النتيجة بتتحسب من Ticks حقيقية جمعها التطبيق في آخر دقيقة (لو كان مفتوح)، وإلا من شمعة آخر دقيقة كتقدير. قارنها بسجل MEXC عندك.")
-        show_df(log)
-
-# المؤقّت في آخر السكريبت عشان ما يقاطعش فحص شغّال
-try:
-    from streamlit_autorefresh import st_autorefresh
-    _pm_fast = section == "🎯 MEXC Up/Down" and st.session_state.get("pm_live_on", True)
-    st_autorefresh(interval=2_000 if _pm_fast else 60_000,
-                   key="bly7_pm_live_refresh" if _pm_fast else "bly7_auto_monitor")
-except Exception:
-    pass
-
-st.markdown("---")
-st.caption("BLY7TRADER | بيانات من واجهات المنصات العامة؛ قد تحدث انقطاعات/حدود معدل. "
-           "لا تنفّذ صفقة اعتمادًا على الإشارة وحدها؛ راجع السيولة والسبريد والمخاطرة.")
+    for sid, H, ws, start, side, pu, pd_, p_up, feats, lead_js
