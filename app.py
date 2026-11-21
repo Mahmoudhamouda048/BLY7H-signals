@@ -1,5 +1,5 @@
-# BLY7TRADER 
-#ملاحظة: الإشارات تنبيهات بحثية وليست نصيحة مالية.
+# BLY7TRADER — V23 (Fixed + Upgraded)
+## ملاحظة: الإشارات تنبيهات بحثية وليست نصيحة مالية.
 
 import os
 import time
@@ -1167,10 +1167,338 @@ def run_backtest(frame, settings, target_idx=0, max_hold=48, fill_wait=6, warmup
     return pd.DataFrame(trades)
 
 
+# ============================ MEXC Up/Down (5m / 15m) — لحظي ============================
+# قواعد MEXC (من صفحة المساعدة الرسمية): Up يكسب لو سعر التسوية > Baseline، ولو يساوي أو أقل يكسب Down.
+# سعر التسوية بيتحسب من أسعار Index لحظية متتالية في آخر دقيقة قبل الانتهاء (يعني متوسط آخر دقيقة تقريبًا).
+# الـ Payout وسعر Baseline ("To Beat") بتتكتب من شاشة المنصة لأن مفيش API عام مؤكد ليهم.
+PM_PRIOR = np.array([1.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+PM_NAMES = ["z", "z_late", "mom3", "rsi", "ema", "cvd", "volr", "bias"]
+
+
+def pm_init():
+    with db() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS pm_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, horizon INTEGER, window_start REAL,
+            decision_min REAL, start_price REAL, price_now REAL, p_up REAL, side TEXT,
+            payout_up REAL, payout_down REAL, ev REAL, features TEXT, outcome TEXT DEFAULT 'OPEN',
+            end_price REAL, correct INTEGER, model_correct INTEGER, pnl REAL)""")
+        conn.execute("CREATE TABLE IF NOT EXISTS pm_model (id INTEGER PRIMARY KEY, weights TEXT, n_updates INTEGER, updated_at TEXT)")
+
+
+def _sig(x):
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
+
+
+def pm_load(horizon):
+    import json
+    with db() as conn:
+        row = conn.execute("SELECT weights, n_updates FROM pm_model WHERE id=?", (horizon,)).fetchone()
+    if row:
+        try:
+            w = np.array(json.loads(row[0]), dtype=float)
+            if len(w) == len(PM_PRIOR):
+                return w, int(row[1])
+        except Exception:
+            pass
+    return PM_PRIOR.copy(), 0
+
+
+def pm_save(horizon, w, n_updates):
+    import json
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO pm_model (id, weights, n_updates, updated_at) VALUES (?,?,?,?)",
+                     (horizon, json.dumps([float(v) for v in w]), int(n_updates), datetime.now(timezone.utc).isoformat()))
+
+
+def _pm_norm(frame):
+    f = frame.copy()
+    t = pd.to_numeric(f["time"], errors="coerce").to_numpy(dtype=float)
+    f["time"] = np.where(t > 1e12, t / 1000, t)
+    return f.reset_index(drop=True)
+
+
+def get_pm_frame(n=1500):
+    """شموع 1 دقيقة لـ BTC: Index من MEXC أولًا، ثم عقود MEXC، ثم Bybit كبديل. آخر صف = الشمعة الجارية."""
+    end = int(time.time())
+    for path, label in (("kline/index_price/", "MEXC Index"), ("kline/", "MEXC Futures")):
+        payload = api_json("https://contract.mexc.com/api/v1/contract/" + path + "BTC_USDT",
+                           {"interval": "Min1", "start": end - n * 60, "end": end})
+        data = (payload or {}).get("data")
+        if isinstance(data, dict) and len(data.get("time", [])) >= 100:
+            size = len(data["time"])
+            vol = data.get("vol") or data.get("amount") or [0] * size
+            if len(vol) != size:
+                vol = [0] * size
+            frame = pd.DataFrame({"time": data["time"], "open": data["open"], "high": data["high"],
+                                  "low": data["low"], "close": data["close"], "vol": vol})
+            frame = _finish(frame, "native")
+            if frame is not None:
+                return _pm_norm(frame), label
+    frame = get_bybit_futures_klines("BTCUSDT", "1m", 1000)
+    if frame is not None:
+        return _pm_norm(frame), "Bybit (بديل)"
+    return None, "تعذر جلب البيانات"
+
+
+def get_live_index(symbol="BTC_USDT"):
+    """سعر لحظي: Index من ticker العقود في MEXC، ثم Bybit كبديل. يرجع (price, source, latency_sec)."""
+    t_start = time.time()
+    payload = api_json("https://contract.mexc.com/api/v1/contract/ticker", {"symbol": symbol}, retries=0)
+    data = (payload or {}).get("data")
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if isinstance(data, dict):
+        idx = safe_float(data.get("indexPrice"))
+        px = idx or safe_float(data.get("fairPrice")) or safe_float(data.get("lastPrice"))
+        if px > 0:
+            return px, ("MEXC Index" if idx else "MEXC Last"), time.time() - t_start
+    payload = api_json("https://api.bybit.com/v5/market/tickers", {"category": "linear", "symbol": "BTCUSDT"}, retries=0)
+    rows = ((payload or {}).get("result") or {}).get("list") or []
+    if rows:
+        px = safe_float(rows[0].get("indexPrice")) or safe_float(rows[0].get("lastPrice"))
+        if px > 0:
+            return px, "Bybit Index (بديل)", time.time() - t_start
+    return None, "تعذر جلب السعر اللحظي", time.time() - t_start
+
+
+def pm_eff_remaining(r):
+    """التباين الفعّال بالدقائق: السعر النهائي = متوسط آخر دقيقة، مش آخر Tick."""
+    r = max(float(r), 0.0)
+    return (r - 1.0) + 1.0 / 3.0 if r > 1.0 else max(r ** 3 / 3.0, 1e-4)
+
+
+def pm_features(frame, i, t0, H, e=None, live_price=None, start=None):
+    close = frame["close"].to_numpy(float).copy()
+    vol = frame["vol"].to_numpy(float)
+    if live_price:
+        close[i] = float(live_price)
+    e_val = float(e) if e is not None else float(i - t0 + 1)
+    r = max(H - e_val, 0.02)
+    start_p = float(start) if start else float(frame["open"].iloc[t0])
+    lo = max(0, i - 30)
+    rets = np.diff(np.log(close[lo:i + 1]))
+    sigma = max(float(rets.std()), 1e-5) if len(rets) >= 5 else 1e-4
+    z = float(np.clip(np.log(close[i] / start_p) / (sigma * np.sqrt(pm_eff_remaining(r))), -6, 6))
+    mom3 = float(np.clip(np.log(close[i] / close[max(i - 3, 0)]) / (sigma * np.sqrt(3)), -4, 4))
+    d = np.diff(close[max(0, i - 14):i + 1])
+    gain, loss = d[d > 0].sum(), -d[d < 0].sum()
+    rsi = 50.0 if (gain + loss) == 0 else 100 * gain / (gain + loss)
+    s60 = pd.Series(close[max(0, i - 59):i + 1])
+    ema = float(np.clip((s60.ewm(span=9, adjust=False).mean().iloc[-1] - s60.ewm(span=21, adjust=False).mean().iloc[-1])
+                        / (close[i] * sigma), -3, 3))
+    cvd = volr = 0.0
+    if vol[max(0, i - 20):i + 1].sum() > 0:
+        o15 = frame["open"].to_numpy(float)[max(0, i - 14):i + 1]
+        c15, v15 = close[max(0, i - 14):i + 1], vol[max(0, i - 14):i + 1]
+        g, rr = v15[c15 > o15].sum(), v15[c15 < o15].sum()
+        cvd = float((g - rr) / (g + rr) if (g + rr) > 0 else 0.0)
+        prev = max(i - 1, 0)
+        volr = float(np.clip(np.log((vol[prev] + 1) / (vol[max(0, prev - 20):prev].mean() + 1)), -2, 2)) if prev > 0 else 0.0
+    return np.array([z, z * e_val / H, mom3, (rsi - 50) / 50, ema, cvd, volr, 1.0]), e_val, start_p
+
+
+def pm_build_dataset(frame, H, offset=0):
+    t = frame["time"].to_numpy(float)
+    opens, highs = frame["open"].to_numpy(float), frame["high"].to_numpy(float)
+    lows, closes = frame["low"].to_numpy(float), frame["close"].to_numpy(float)
+    X, y, E, W = [], [], [], []
+    wid = 0
+    for t0 in range(len(t) - H):
+        if int(round(t[t0] - offset * 60)) % (H * 60) != 0:
+            continue
+        last = t0 + H - 1
+        if abs(t[last] - t[t0] - (H - 1) * 60) > 1:
+            continue
+        start = opens[t0]
+        settle = (opens[last] + highs[last] + lows[last] + closes[last]) / 4  # تقدير متوسط آخر دقيقة
+        label = 1.0 if settle > start else 0.0  # المساواة = Down حسب القواعد
+        wid += 1
+        for e in range(1, H):
+            i = t0 + e - 1
+            if i < 35:
+                continue
+            x, _, _ = pm_features(frame, i, t0, H)
+            X.append(x); y.append(label); E.append(e); W.append(wid)
+    return np.array(X), np.array(y), np.array(E), np.array(W)
+
+
+def pm_fit(X, y, w0=None, steps=400, lr=0.4, l2=0.05):
+    w = (PM_PRIOR if w0 is None else w0).copy()
+    n = max(len(y), 1)
+    for _ in range(steps):
+        p = _sig(X @ w)
+        w -= lr * (X.T @ (p - y) / n + l2 * (w - PM_PRIOR))
+    return w
+
+
+def pm_online_step(w, x, y, lr=0.03, l2=0.01):
+    p = _sig(float(x @ w))
+    return w - lr * ((p - y) * x + l2 * (w - PM_PRIOR))
+
+
+def pm_decide(p_up, payout_up, payout_down, min_edge, min_conf):
+    ev_up = p_up * payout_up - (1 - p_up)
+    ev_dn = (1 - p_up) * payout_down - p_up
+    side, ev = ("UP", ev_up) if ev_up >= ev_dn else ("DOWN", ev_dn)
+    conf = p_up if side == "UP" else 1 - p_up
+    if ev < min_edge or conf < min_conf:
+        return "SKIP", ev, conf
+    return side, ev, conf
+
+
+def pm_evaluate(X, y, E, W, payout, min_edge, min_conf):
+    cut = np.quantile(W, 0.7)
+    tr, te = W <= cut, W > cut
+    if tr.sum() < 50 or te.sum() < 30:
+        return None
+    w = pm_fit(X[tr], y[tr])
+    out = {}
+    for name, ww in (("Baseline (Brownian)", PM_PRIOR), ("النموذج المتعلّم", w)):
+        p = _sig(X[te] @ ww)
+        bets = []
+        for pi, yi in zip(p, y[te]):
+            side, ev, _ = pm_decide(pi, payout, payout, min_edge, min_conf)
+            if side == "SKIP":
+                continue
+            bets.append(payout if (side == "UP") == (yi == 1.0) else -1.0)
+        out[name] = {"accuracy": float(((p > 0.5) == (y[te] == 1.0)).mean()), "brier": float(((p - y[te]) ** 2).mean()),
+                     "bets": len(bets), "bet_win_rate": float(np.mean([b > 0 for b in bets])) if bets else 0.0,
+                     "pnl_per_bet": float(np.mean(bets)) if bets else 0.0, "pnl_total": float(np.sum(bets))}
+    p = _sig(X[te] @ w)
+    conf = np.maximum(p, 1 - p)
+    correct = ((p > 0.5) == (y[te] == 1.0))
+    rows = []
+    for lo_, hi_ in ((0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01)):
+        m = (conf >= lo_) & (conf < hi_)
+        if m.sum():
+            rows.append({"الثقة": f"{lo_:.0%}-{min(hi_, 1):.0%}", "عدد": int(m.sum()), "الدقة الفعلية": f"{correct[m].mean():.1%}"})
+    by_e = []
+    for e in sorted(set(E[te])):
+        m = E[te] == e
+        by_e.append({"الدقيقة داخل الدورة": int(e), "عدد": int(m.sum()), "الدقة": f"{correct[m].mean():.1%}"})
+    return {"metrics": out, "calibration": rows, "by_elapsed": by_e, "weights": w,
+            "n_train": int(tr.sum()), "n_test": int(te.sum()), "base_up": float(y[te].mean())}
+
+
+def pm_window_start(H, offset, now=None):
+    now = time.time() if now is None else now
+    W_sec = H * 60
+    return ((now - offset * 60) // W_sec) * W_sec + offset * 60
+
+
+def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_sec, auto_log):
+    """حالة لحظية: سعر Index الحالي + Baseline + احتمال + قرار. بيتحدث كل ثانيتين."""
+    import json
+    ss = st.session_state
+    px, src, latency = get_live_index()
+    if px is None:
+        return {"error": "تعذر جلب السعر اللحظي من MEXC/Bybit."}
+    now = time.time()
+    ticks = ss.setdefault("pm_ticks", [])
+    ticks.append((now, px))
+    del ticks[:-4000]
+    if ss.get("pm_frame") is None or now - ss.get("pm_frame_ts", 0) > 20:
+        frame, fsrc = get_pm_frame()
+        if frame is not None:
+            ss["pm_frame"], ss["pm_frame_ts"], ss["pm_frame_src"] = frame, now, fsrc
+    frame = ss.get("pm_frame")
+    if frame is None:
+        return {"error": "تعذر جلب شموع الدقيقة."}
+    W_sec = H * 60
+    t0_time = pm_window_start(H, offset, now)
+    t = frame["time"].to_numpy(float)
+    idx0 = np.where(np.abs(t - t0_time) < 1)[0]
+    if len(idx0) == 0:
+        return {"error": "شمعة بداية الدورة مش في البيانات لسه؛ استنى ثواني."}
+    t0, i = int(idx0[0]), len(frame) - 1
+    manual = ss.get("pm_base_manual")
+    if manual and abs(manual[0] - t0_time) < 1 and manual[1] > 0:
+        base, base_src = float(manual[1]), "يدوي من شاشة MEXC ✅"
+    else:
+        near = [p for (ts, p) in ticks if t0_time <= ts <= t0_time + 4]
+        if near:
+            base, base_src = near[0], "لحظي من التطبيق (أول Tick في الدورة)"
+        else:
+            base, base_src = float(frame["open"].iloc[t0]), "تقدير من افتتاح شمعة الدقيقة ⚠️ (ثبّت Baseline الحقيقي)"
+    e = (now - t0_time) / 60
+    remaining = H * 60 - (now - t0_time)
+    if e < 0.1:
+        return {"error": "الدورة لسه بادئة؛ استنى ثواني."}
+    x, e, _ = pm_features(frame, i, t0, H, e=e, live_price=px, start=base)
+    w, n_upd = pm_load(H)
+    p_up = float(_sig(x @ w))
+    side, ev, conf = pm_decide(p_up, payout_up, payout_down, min_edge, min_conf)
+    closed = remaining < cutoff_sec
+    running_avg = None
+    if remaining <= 60:
+        pts = [p for ts, p in ticks if ts >= t0_time + W_sec - 60]
+        running_avg = float(np.mean(pts)) if len(pts) >= 3 else None
+    logged = False
+    if auto_log and side != "SKIP" and not closed:
+        with db() as conn:
+            dup = conn.execute("SELECT 1 FROM pm_predictions WHERE horizon=? AND window_start=?", (H, t0_time)).fetchone()
+            if not dup:
+                conn.execute("""INSERT INTO pm_predictions (created_at,horizon,window_start,decision_min,start_price,price_now,
+                    p_up,side,payout_up,payout_down,ev,features) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                             (datetime.now(timezone.utc).isoformat(), H, t0_time, e, base, px, p_up, side,
+                              payout_up, payout_down, ev, json.dumps([float(v) for v in x])))
+                logged = True
+    chart = [(datetime.fromtimestamp(ts, CAIRO).strftime("%H:%M:%S"), p) for ts, p in ticks if ts >= t0_time]
+    return {"p_up": p_up, "side": side, "ev": ev, "conf": conf, "e": e, "remaining": remaining, "base": base,
+            "base_src": base_src, "px": px, "src": src, "latency": latency, "z": float(x[0]), "closed": closed,
+            "n_updates": n_upd, "n_ticks": len(ticks), "running_avg": running_avg, "logged": logged,
+            "ends_at": datetime.fromtimestamp(t0_time + W_sec, CAIRO).strftime("%H:%M:%S"),
+            "now": now_cairo().strftime("%H:%M:%S"), "chart": chart, "window_start": t0_time}
+
+
+def pm_resolve_open():
+    import json
+    with db() as conn:
+        rows = conn.execute("SELECT id,horizon,window_start,start_price,side,payout_up,payout_down,p_up,features "
+                            "FROM pm_predictions WHERE outcome='OPEN'").fetchall()
+    now = time.time()
+    due = [r for r in rows if r[2] + r[1] * 60 + 20 <= now]
+    if not due:
+        return 0
+    frame, _ = get_pm_frame()
+    if frame is None:
+        return 0
+    t = frame["time"].to_numpy(float)
+    ticks = st.session_state.get("pm_ticks", [])
+    done = 0
+    for sid, H, ws, start, side, pu, pd_, p_up, feats in due:
+        end_t = ws + H * 60
+        pts = [p for ts, p in ticks if end_t - 60 <= ts <= end_t]
+        if len(pts) >= 8:
+            settle = float(np.mean(pts))  # متوسط Ticks حقيقية جمعها التطبيق في آخر دقيقة
+        else:
+            idx = np.where(np.abs(t - (ws + (H - 1) * 60)) < 1)[0]
+            if len(idx) == 0:
+                if now - ws > 7200:
+                    with db() as conn:
+                        conn.execute("UPDATE pm_predictions SET outcome='EXPIRED' WHERE id=?", (sid,))
+                continue
+            k = idx[0]
+            settle = float((frame["open"].iloc[k] + frame["high"].iloc[k] + frame["low"].iloc[k] + frame["close"].iloc[k]) / 4)
+        up = settle > start  # المساواة = Down
+        model_correct = int((p_up > 0.5) == up)
+        correct = int((side == "UP") == up) if side != "SKIP" else None
+        pnl = ((pu if side == "UP" else pd_) if correct else -1.0) if side != "SKIP" else 0.0
+        w, n_upd = pm_load(H)
+        w = pm_online_step(w, np.array(json.loads(feats), dtype=float), 1.0 if up else 0.0)
+        pm_save(H, w, n_upd + 1)
+        with db() as conn:
+            conn.execute("UPDATE pm_predictions SET outcome=?,end_price=?,correct=?,model_correct=?,pnl=? WHERE id=?",
+                         ("UP" if up else "DOWN", settle, correct, model_correct, pnl, sid))
+        done += 1
+    return done
+
+
 # ============================ Init ============================
 
 try:
     init_db()
+    pm_init()
 except Exception as _db_exc:
     st.warning(f"تحذير قاعدة البيانات: {_db_exc}")
 
@@ -1237,7 +1565,7 @@ settings = {
 
 section = st.radio(
     "القسم",
-    ["🔎 الماسح", "📉 DUMP / SHORT", "🚀 DEX", "📊 سجل الإشارات", "🧠 الذاكرة والتعلّم", "🧪 اختبار تاريخي"],
+    ["🔎 الماسح", "📉 DUMP / SHORT", "🚀 DEX", "📊 سجل الإشارات", "🧠 الذاكرة والتعلّم", "🧪 اختبار تاريخي", "🎯 MEXC Up/Down"],
     horizontal=True,
 )
 
@@ -1415,10 +1743,127 @@ elif section == "🧪 اختبار تاريخي":
                 show_df(trades)
             st.caption("تنبيه: باكتست على بيانات ماضية لا يضمن الأداء المستقبلي، ولا يشمل Funding ولا فروق السبريد الفعلية.")
 
+elif section == "🎯 MEXC Up/Down":
+    st.subheader("🎯 MEXC Up/Down — دورات 5 و15 دقيقة (BTC) ⚡ لحظي")
+    st.warning("مفيش توقع 100% صح. القسم بيحسب احتمال كل اتجاه من السعر اللحظي ويدخل بس لما فيه ميزة فوق نقطة التعادل، وبيتعلم من نتايجه ويعرض دقته الحقيقية.")
+    st.caption("قواعد MEXC: Up يكسب لو سعر التسوية أعلى من Baseline، ولو يساويه أو أقل يكسب Down. التسوية من متوسط أسعار Index في آخر دقيقة، والنموذج بيحسب ده.")
+    c1, c2, c3 = st.columns(3)
+    pm_h = 5 if c1.selectbox("الدورة", ["5 دقائق", "15 دقيقة"]) == "5 دقائق" else 15
+    pm_pu = c2.number_input("Payout لـ Up (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
+    pm_pd = c3.number_input("Payout لـ Down (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
+    c4, c5, c6 = st.columns(3)
+    pm_edge = c4.slider("أقل ميزة EV للدخول", 0.0, 0.5, 0.08, 0.01)
+    pm_conf = c5.slider("أقل ثقة", 0.50, 0.95, 0.62, 0.01)
+    pm_off = c6.number_input("إزاحة بداية الدورة (دقائق)", min_value=0, max_value=14, value=0, step=1)
+    c7, c8, c9 = st.columns(3)
+    pm_cut = c7.number_input("قفل الدخول قبل النهاية (ثواني)", min_value=0, max_value=120, value=15, step=5)
+    pm_live_on = c8.checkbox("⚡ تحديث لحظي كل ثانيتين", value=True, key="pm_live_on")
+    pm_auto = c9.checkbox("تسجيل تلقائي لأول إشارة في كل دورة", value=True)
+    st.caption(f"نقطة التعادل: Up ≥ {1 / (1 + pm_pu):.1%} | Down ≥ {1 / (1 + pm_pd):.1%} احتمال صح.")
+
+    b1, b2 = st.columns([2, 1])
+    base_in = b1.number_input("Baseline (To Beat) من شاشة MEXC للدورة الحالية", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+    if b2.button("📌 ثبّت للدورة الحالية"):
+        st.session_state["pm_base_manual"] = (pm_window_start(pm_h, pm_off), base_in)
+        st.toast("تم تثبيت Baseline للدورة الحالية فقط")
+
+    _now_pm = time.time()
+    if _now_pm - st.session_state.get("pm_resolve_ts", 0) > 15:
+        st.session_state["pm_resolve_ts"] = _now_pm
+        try:
+            if pm_resolve_open():
+                st.toast("اتحسمت توقعات وتم تحديث النموذج")
+        except Exception as exc:
+            st.caption(f"تعذر حسم التوقعات: {exc}")
+
+    st.markdown("#### 🎯 الدورة الحالية")
+    manual_click = (not pm_live_on) and st.button("🎯 توقّع الآن", type="primary")
+    if pm_live_on or manual_click:
+        live = pm_live_state(pm_h, pm_off, pm_pu, pm_pd, pm_edge, pm_conf, pm_cut, pm_auto)
+        if live.get("error"):
+            st.error(live["error"])
+        else:
+            label = {"UP": "🟢 Up", "DOWN": "🔴 Down", "SKIP": "⏸️ تجاهل"}[live["side"]]
+            if live["closed"]:
+                label = "🔒 الدخول مقفول"
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Index الآن", f"{live['px']:,.2f}", f"{live['px'] - live['base']:+,.2f} عن Baseline")
+            m2.metric("احتمال Up", f"{live['p_up']:.1%}")
+            m3.metric("القرار", label)
+            m4.metric("EV لكل 1$", f"{live['ev']:+.3f}")
+            st.caption(f"⏱️ {live['now']} | باقي {live['remaining']:.0f}ث (تنتهي {live['ends_at']}) | Baseline {live['base']:,.2f} — {live['base_src']} | "
+                       f"المصدر: {live['src']} ({live['latency'] * 1000:.0f}ms) | z={live['z']:+.2f} | تحديثات تعلّم: {live['n_updates']} | Ticks: {live['n_ticks']}")
+            if live["running_avg"] is not None:
+                st.caption(f"متوسط Index في آخر دقيقة حتى الآن: {live['running_avg']:,.2f} (ده اللي بيتحسب عليه سعر التسوية تقريبًا)")
+            if live["logged"]:
+                st.success("📝 اتسجلت إشارة للدورة دي.")
+            if live["side"] == "SKIP" and not live["closed"]:
+                st.info("مفيش ميزة كفاية دلوقتي. التجاهل قرار صح كتير.")
+            if len(live["chart"]) >= 2:
+                chart_df = pd.DataFrame(live["chart"], columns=["t", "السعر"]).set_index("t")
+                chart_df["Baseline"] = live["base"]
+                st.line_chart(chart_df)
+            st.caption("⚠️ تأكد إن الـ Payout وBaseline اللي على شاشتك هما اللي كاتبهم هنا، وإن المنصة لسه بتقبل الدخول.")
+
+    st.markdown("#### 🧠 تدريب وتقييم على التاريخ")
+    if st.button("🧠 درّب وقيّم النموذج"):
+        with st.spinner("بيجلب البيانات ويشغّل اختبار Walk-forward..."):
+            frame, src = get_pm_frame()
+            if frame is None:
+                st.session_state["pm_eval"] = {"error": src}
+            else:
+                X, y, E, W = pm_build_dataset(frame, pm_h, pm_off)
+                if len(y) < 200:
+                    st.session_state["pm_eval"] = {"error": "بيانات قليلة للتدريب."}
+                else:
+                    ev_res = pm_evaluate(X, y, E, W, (pm_pu + pm_pd) / 2, pm_edge, pm_conf)
+                    w_all = pm_fit(X, y)
+                    _, n_old = pm_load(pm_h)
+                    pm_save(pm_h, w_all, n_old)
+                    st.session_state["pm_eval"] = {"eval": ev_res, "src": src, "n": len(y), "w": w_all}
+    pe = st.session_state.get("pm_eval")
+    if pe:
+        if pe.get("error"):
+            st.error(pe["error"])
+        elif pe.get("eval") is None:
+            st.info("عينات الاختبار قليلة؛ زوّد البيانات.")
+        else:
+            r = pe["eval"]
+            st.caption(f"المصدر: {pe['src']} | عينات: {pe['n']} (تدريب {r['n_train']} / اختبار {r['n_test']}) | نسبة Up في الاختبار {r['base_up']:.1%}")
+            show_df(pd.DataFrame([{"النموذج": k, "الدقة": f"{v['accuracy']:.1%}", "Brier (أقل أحسن)": round(v["brier"], 4),
+                                   "صفقات": v["bets"], "فوز الصفقات": f"{v['bet_win_rate']:.1%}",
+                                   "ربح/صفقة": round(v["pnl_per_bet"], 3), "إجمالي": round(v["pnl_total"], 2)}
+                                  for k, v in r["metrics"].items()]))
+            st.write("**الدقة حسب الثقة (اختبار خارج العينة)**")
+            show_df(pd.DataFrame(r["calibration"]))
+            st.write("**الدقة حسب الدقيقة داخل الدورة**")
+            show_df(pd.DataFrame(r["by_elapsed"]))
+            st.write("أوزان النموذج: " + " | ".join(f"{n}={v:+.2f}" for n, v in zip(PM_NAMES, pe["w"])))
+            st.caption("الباكتست بيفترض إن الـ Payout ثابت طول الدورة؛ لو المنصة بتعدّله مع حركة السعر فالأرباح الفعلية هتبقى أقل. القياس الحقيقي هو السجل الحي تحت.")
+
+    st.markdown("#### 📒 السجل والأداء الفعلي (Paper)")
+    with db() as conn:
+        log = pd.read_sql_query("SELECT id,created_at,horizon,decision_min,start_price,p_up,side,ev,outcome,end_price,correct,model_correct,pnl "
+                                "FROM pm_predictions ORDER BY id DESC LIMIT 300", conn)
+    if log.empty:
+        st.info("لسه مفيش توقعات مسجلة. فعّل التحديث اللحظي وسيب التطبيق مفتوح.")
+    else:
+        done_log = log[log.outcome.isin(["UP", "DOWN"])]
+        bets_log = done_log[done_log.side != "SKIP"]
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("توقعات محسومة", len(done_log))
+        a2.metric("دقة النموذج", f"{done_log['model_correct'].mean():.1%}" if len(done_log) else "—")
+        a3.metric("فوز الصفقات", f"{bets_log['correct'].mean():.1%}" if len(bets_log) else "—")
+        a4.metric("ربح Paper (وحدات)", f"{done_log['pnl'].sum():+.2f}")
+        st.caption("النتيجة بتتحسب من Ticks حقيقية جمعها التطبيق في آخر دقيقة (لو كان مفتوح)، وإلا من شمعة آخر دقيقة كتقدير. قارنها بسجل MEXC عندك.")
+        show_df(log)
+
 # المؤقّت في آخر السكريبت عشان ما يقاطعش فحص شغّال
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=60_000, key="bly7_auto_monitor")
+    _pm_fast = section == "🎯 MEXC Up/Down" and st.session_state.get("pm_live_on", True)
+    st_autorefresh(interval=2_000 if _pm_fast else 60_000,
+                   key="bly7_pm_live_refresh" if _pm_fast else "bly7_auto_monitor")
 except Exception:
     pass
 
