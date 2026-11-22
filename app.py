@@ -1,7 +1,8 @@
-# BLY7TRADER —  (Pro UI + Lead Indicators + Pump/Dump Radar)
+# BLY7TRADER — V24.1 (Pro UI + Lead Indicators + Pump/Dump Radar + Snap-back Reversal Alerts)
 ## ملاحظة: الإشارات تنبيهات بحثية وليست نصيحة مالية.
 
 import os
+import re
 import json
 import time
 import sqlite3
@@ -15,23 +16,30 @@ import requests
 import streamlit as st
 
 try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except Exception:  # الحزمة غير مثبتة
+    st_autorefresh = None
+    HAS_AUTOREFRESH = False
+
+try:
     from zoneinfo import ZoneInfo
     CAIRO = ZoneInfo("Africa/Cairo")
 except Exception:  # tzdata غير متوفر
     CAIRO = timezone(timedelta(hours=2))
 
 st.set_page_config(
-    page_title="BLY7TRADER V24",
+    page_title="BLY7TRADER V24.1",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 APP_TITLE = "BLY7TRADER"
-APP_VERSION = "V24"
+APP_VERSION = "V24.1"
 DB_PATH = os.getenv("BLY7TRADER_DB", "bly7trader_memory.db")
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "BLY7TRADER/24.0"})
+SESSION.headers.update({"User-Agent": "BLY7TRADER/24.1"})
 TIMEOUT = 8
 STABLES = {"USDCUSDT", "BUSDUSDT", "DAIUSDT", "FDUSDUSDT", "USDEUSDT", "TUSDUSDT"}
 
@@ -114,7 +122,7 @@ st.markdown(
     f"""
     <div class="b7-hero">
       <h1>💎 {APP_TITLE} <span style="opacity:.7;font-weight:600">{APP_VERSION}</span></h1>
-      <p>ماسح عقود Futures + رادار Pump/Dump مبكر + MEXC Up/Down بمؤشرات قائدة + ذاكرة وتعلّم وباكتست</p>
+      <p>ماسح عقود Futures + رادار Pump/Dump مبكر + MEXC Up/Down بمؤشرات قائدة وتنبيه ارتدادات حادة + ذاكرة وتعلّم وباكتست</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -151,6 +159,16 @@ def safe_float(value, default=0.0):
         return result if pd.notna(result) else default
     except (TypeError, ValueError):
         return default
+
+
+def _clip(x, a=0.0, b=1.0):
+    return max(a, min(b, x))
+
+
+def clean_text(value, max_len=24):
+    """ينظّف نصوص جاية من مصادر خارجية (رموز DEX) قبل عرضها: يمنع روابط/Markdown/HTML خبيثة."""
+    s = re.sub(r"[^\w\-\.\$ ]", "", str(value or ""), flags=re.UNICODE).strip()[:max_len]
+    return s or "UNKNOWN"
 
 
 def base_asset(symbol):
@@ -1135,14 +1153,18 @@ def auto_monitor_open_trades(limit=150):
 
 
 def get_monitor_status(force=False):
-    last = st.session_state.get("_mon_ts", 0)
-    if not force and "_mon_res" in st.session_state and time.time() - last < 55:
-        return st.session_state["_mon_res"]
+    """مراقبة الصفقات المفتوحة. أثناء التحديث اللحظي لـ Up/Down بنقلل تكرارها عشان ما تبطّأش الـ Ticks."""
+    ss = st.session_state
+    last = ss.get("_mon_ts", 0)
+    live_pm = ss.get("main_section") == "🎯 MEXC Up/Down" and ss.get("pm_live_on", True)
+    gap = 300 if live_pm else 55
+    if not force and "_mon_res" in ss and time.time() - last < gap:
+        return ss["_mon_res"]
     try:
         res = auto_monitor_open_trades()
     except Exception as exc:
         res = {"checked": 0, "resolved": [], "error": str(exc)}
-    st.session_state["_mon_ts"], st.session_state["_mon_res"] = time.time(), res
+    ss["_mon_ts"], ss["_mon_res"] = time.time(), res
     return res
 
 
@@ -1190,10 +1212,13 @@ def scan_dex(min_vol5=5000.0, min_chg5=5.0, min_liq=15000.0):
         age_h = (time.time() * 1000 - created) / 3_600_000 if created else None
         if price <= 0:
             continue
-        rows.append({"symbol": token.get("symbol", "UNKNOWN"), "address": token.get("address", ""),
+        url = str(pair.get("url") or "")
+        if not url.startswith("https://dexscreener.com/"):
+            url = ""
+        rows.append({"symbol": clean_text(token.get("symbol", "UNKNOWN")), "address": str(token.get("address", ""))[:64],
                      "price": price, "change_5m": chg5, "change_1h": chg1h, "volume_5m": vol5,
                      "liquidity": liq, "buys": buys, "sells": sells, "age_h": age_h,
-                     "fdv": safe_float(pair.get("fdv")), "url": pair.get("url", "")})
+                     "fdv": safe_float(pair.get("fdv")), "url": url})
     passed = [r for r in rows if r["volume_5m"] >= min_vol5 and r["change_5m"] >= min_chg5 and r["liquidity"] >= min_liq]
     passed.sort(key=lambda r: r["volume_5m"], reverse=True)
     near = [r for r in rows if r["liquidity"] >= min_liq and r not in passed]
@@ -1685,6 +1710,7 @@ def format_radar_telegram(item, platform):
 # قواعد MEXC: Up يكسب لو سعر التسوية > Baseline، ولو يساوي أو أقل يكسب Down.
 # التسوية = متوسط أسعار Index في آخر دقيقة قبل الانتهاء.
 # V24: مؤشرات قائدة (دفتر أوامر + CVD حقيقي + فرق سعر البورصات الكبيرة عن Index + زخم) بتتحرك قبل Index بثواني.
+# V24.1: كاشف ارتدادات حادة (Snap-back) + مثبّت إشارة (Hysteresis) يمنع التقلب.
 PM_PRIOR = np.array([1.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 PM_NAMES = ["z", "z_late", "mom3", "rsi", "ema", "cvd", "volr", "bias"]
 
@@ -1696,6 +1722,15 @@ LEAD_W = {
     "cvd": {"BINANCE": 1.0, "BYBIT": 0.8, "OKX": 0.5},
     "sp": {"BINANCE": 1.0, "BYBIT": 0.8, "OKX": 0.6, "COINBASE": 0.6},
 }
+
+REV_DEFAULT = dict(
+    ext_mult=0.8,        # أقل امتداد (× ATR الدورة) عشان الارتداد يتحسب
+    min_recovery=0.25,   # أقل نسبة استرداد من الامتداد
+    fast_win=30,         # نافذة قياس سرعة الارتداد (ثانية)
+    alert_score=60,
+    strong_score=75,
+    watch_score=45,
+)
 
 
 def pm_init():
@@ -1709,6 +1744,10 @@ def pm_init():
         if "lead" not in cols:
             conn.execute("ALTER TABLE pm_predictions ADD COLUMN lead TEXT")
         conn.execute("CREATE TABLE IF NOT EXISTS pm_model (id INTEGER PRIMARY KEY, weights TEXT, n_updates INTEGER, updated_at TEXT)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS pm_rev_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, horizon INTEGER, window_start REAL,
+            direction TEXT, level TEXT, score REAL, price REAL, base REAL, need REAL, remaining REAL,
+            atr REAL, outcome TEXT DEFAULT 'OPEN', end_price REAL, win INTEGER)""")
 
 
 def _sig(x):
@@ -1836,11 +1875,13 @@ def _imb(bids, asks):
 
 
 def _cvd_windows(trades):
+    """CVD سريع (20ث) وبطيء (90ث) + معدل الحجم في آخر 20ث (وحدة/ثانية) لقياس طفرات الحجم."""
     trades = [t for t in trades if t[0] > 0]
     if not trades:
-        return {"fast": None, "slow": None, "cover": 0.0}
+        return {"fast": None, "slow": None, "cover": 0.0, "rate": None}
     ref = max(t[0] for t in trades)
-    out = {"cover": (ref - min(t[0] for t in trades)) / 1000}
+    cover = (ref - min(t[0] for t in trades)) / 1000
+    out = {"cover": cover, "rate": None}
     for name, win in (("fast", 20), ("slow", 90)):
         cut = ref - win * 1000
         sel = [t for t in trades if t[0] >= cut]
@@ -1848,6 +1889,8 @@ def _cvd_windows(trades):
         sell = sum(q for _, q, b in sel if not b)
         tot = buy + sell
         out[name] = (buy - sell) / tot * 100 if tot > 0 and len(sel) >= 5 else None
+        if name == "fast" and len(sel) >= 5:
+            out["rate"] = tot / max(min(win, cover), 1.0)
     return out
 
 
@@ -1858,9 +1901,9 @@ def parse_lead(raw):
         mid = None
         if bids and asks:
             mid = (max(p for p, _ in bids) + min(p for p, _ in asks)) / 2
-        cv = _cvd_windows(trades) if trades else {"fast": None, "slow": None, "cover": 0.0}
+        cv = _cvd_windows(trades) if trades else {"fast": None, "slow": None, "cover": 0.0, "rate": None}
         venues[name] = {"mid": mid, "imb": _imb(bids, asks) if bids and asks else None,
-                        "fast": cv["fast"], "slow": cv["slow"], "cover": cv["cover"]}
+                        "fast": cv["fast"], "slow": cv["slow"], "cover": cv["cover"], "rate": cv.get("rate")}
 
     b = raw.get("bn_book")
     t = raw.get("bn_tr")
@@ -1883,7 +1926,7 @@ def parse_lead(raw):
         bid, ask, price = safe_float(cb.get("bid")), safe_float(cb.get("ask")), safe_float(cb.get("price"))
         mid = (bid + ask) / 2 if bid > 0 and ask > 0 else price
         if mid > 0:
-            venues["COINBASE"] = {"mid": mid, "imb": None, "fast": None, "slow": None, "cover": 0.0}
+            venues["COINBASE"] = {"mid": mid, "imb": None, "fast": None, "slow": None, "cover": 0.0, "rate": None}
     return venues
 
 
@@ -1891,6 +1934,7 @@ def lead_compute(venues, px, ss, now):
     """يحوّل بيانات البورصات لـ 4 مؤشرات في [-1, +1]. فرق السعر بيتعدّل بخط أساس (Basis) آخر 15 دقيقة."""
     hist = ss.setdefault("pm_lead_hist", {})
     acc = {k: [0.0, 0.0] for k in ("ob", "cvd", "sp", "mom")}
+    accf = [0.0, 0.0]  # متوسط CVD السريع (%) لكاشف الارتداد
     rows, calibrating, cal_have = [], False, 0
     for name, d in venues.items():
         mid = d.get("mid")
@@ -1920,6 +1964,9 @@ def lead_compute(venues, px, ss, now):
                   (0.4 * np.tanh(d["slow"] / 40) if d.get("slow") is not None else 0.0)
             acc["cvd"][0] += w * float(val)
             acc["cvd"][1] += w
+            if d.get("fast") is not None:
+                accf[0] += w * d["fast"]
+                accf[1] += w
         w = LEAD_W["sp"].get(name)
         if w and sp_adj is not None:
             acc["sp"][0] += w * float(np.tanh(sp_adj / 2.0))
@@ -1936,7 +1983,15 @@ def lead_compute(venues, px, ss, now):
             "CVD 90ث %": round(d["slow"], 1) if d.get("slow") is not None else None,
         })
     L = [acc[k][0] / acc[k][1] if acc[k][1] > 0 else 0.0 for k in ("ob", "cvd", "sp", "mom")]
-    return {"L": L, "rows": rows, "n": len(venues), "calibrating": calibrating, "cal_have": cal_have}
+    vol_rate = vol_src = None
+    for nm in ("BINANCE", "BYBIT"):
+        v = venues.get(nm)
+        if v and v.get("rate") is not None:
+            vol_rate, vol_src = v["rate"], nm
+            break
+    return {"L": L, "rows": rows, "n": len(venues), "calibrating": calibrating, "cal_have": cal_have,
+            "cvd_fast": (accf[0] / accf[1]) if accf[1] > 0 else None,
+            "vol_rate": vol_rate, "vol_src": vol_src}
 
 
 # ---------------------- نموذج الاحتمال ----------------------
@@ -2026,6 +2081,17 @@ def pm_decide(p_up, payout_up, payout_down, min_edge, min_conf):
     return side, ev, conf
 
 
+def pm_side_ev(p_up, side, payout_up, payout_down):
+    """EV والثقة لجهة معيّنة؛ لو SKIP يرجّع أفضل جهة (للعرض)."""
+    ev_up = p_up * payout_up - (1 - p_up)
+    ev_dn = (1 - p_up) * payout_down - p_up
+    if side == "UP":
+        return ev_up, p_up
+    if side == "DOWN":
+        return ev_dn, 1 - p_up
+    return (ev_up, p_up) if ev_up >= ev_dn else (ev_dn, 1 - p_up)
+
+
 def pm_evaluate(X, y, E, W, payout, min_edge, min_conf):
     cut = np.quantile(W, 0.7)
     tr, te = W <= cut, W > cut
@@ -2066,8 +2132,238 @@ def pm_window_start(H, offset, now=None):
     return ((now - offset * 60) // W_sec) * W_sec + offset * 60
 
 
+# ---------------------- كاشف الارتدادات الحادة (Snap-back) ----------------------
+# السوق بيتحسم على متوسط Index آخر دقيقة مقابل الـ Baseline. الكاشف بيدوّر على:
+#   امتداد كبير عكس الـ Baseline (× ATR الدورة) ثم استرداد سريع + قلب تدفق الصفقات (CVD) + طفرة حجم + ميل دفتر الأوامر.
+# مهم: لو الارتداد جه متأخر (آخر دقيقة)، المتوسط اتحدد جزء كبير منه وممكن مايقلبش النتيجة — لذلك الكاشف
+# بيحسب "المسافة المطلوبة فعلًا" ويقلل تأثيره على الاحتمال لو الارتداد مش كفاية للتسوية.
+
+def pm_horizon_atr(frame, H, offset, t0_time, n=14):
+    """متوسط المدى الحقيقي (ATR) لدورات الـ H دقيقة المكتملة قبل الدورة الحالية بالدولار."""
+    close = frame["close"].to_numpy(float)
+    try:
+        t = frame["time"].to_numpy(float)
+        m = t < t0_time - 0.5
+        if int(m.sum()) >= H * 5:
+            tt = t[m]
+            hi = frame["high"].to_numpy(float)[m]
+            lo = frame["low"].to_numpy(float)[m]
+            cl = close[m]
+            wid = np.floor((tt - offset * 60) / (H * 60)).astype(np.int64)
+            trs, prev_c = [], None
+            for wv in np.unique(wid):
+                sel = wid == wv
+                if int(sel.sum()) < H:  # دورة ناقصة
+                    continue
+                h_, l_, c_ = float(hi[sel].max()), float(lo[sel].min()), float(cl[sel][-1])
+                tr = (h_ - l_) if prev_c is None else max(h_ - l_, abs(h_ - prev_c), abs(l_ - prev_c))
+                trs.append(tr)
+                prev_c = c_
+            if len(trs) >= 4:
+                return float(np.mean(trs[-n:]))
+    except Exception:
+        pass
+    rets = np.diff(np.log(close[-120:])) if len(close) > 10 else np.array([])
+    sig = float(rets.std()) if len(rets) > 5 else 1e-4
+    return float(close[-1] * max(sig, 1e-5) * np.sqrt(H) * 1.6)
+
+
+def pm_rev_detect(base, win_hi, win_lo, px, atr, speed_move, cvd_now, cvd_base, spike, ob, cfg):
+    """
+    UP   = ارتداد صاعد: السعر نزل تحت Baseline وبيرجع.
+    DOWN = ارتداد هابط: السعر طلع فوق Baseline وبينزل.
+    سكور 0-100: استرداد 25 + سرعة 25 + CVD 25 (فلب +10) + طفرة حجم 15 + دفتر أوامر 10.
+    """
+    best = None
+    for d in ("UP", "DOWN"):
+        sign = 1 if d == "UP" else -1
+        ext = (base - win_lo) if d == "UP" else (win_hi - base)
+        rec = (px - win_lo) if d == "UP" else (win_hi - px)
+        if ext <= 0 or atr <= 0:
+            continue
+        ratio = rec / ext
+        speed_ratio = (sign * speed_move / ext) if speed_move is not None else 0.0
+        cvd_dir = sign * cvd_now if cvd_now is not None else 0.0
+        base_dir = sign * cvd_base if cvd_base is not None else None
+        ob_dir = sign * ob if ob is not None else 0.0
+
+        pts_rec = 25 * _clip((ratio - 0.15) / 0.85)
+        pts_speed = 25 * _clip(speed_ratio / 0.5)
+        pts_cvd = 15 * _clip(cvd_dir / 25.0)
+        if base_dir is not None and base_dir < -5 and cvd_dir > 5:
+            pts_cvd += 10
+        pts_spike = 15 * _clip((spike - 1.0) / 1.5) if cvd_dir > 0 else 0.0
+        pts_book = 10 * _clip(ob_dir / 0.35)
+        score = pts_rec + pts_speed + pts_cvd + pts_spike + pts_book
+
+        eligible = ext >= cfg["ext_mult"] * atr and ratio >= cfg["min_recovery"] and speed_ratio > 0
+        if eligible and score >= cfg["strong_score"]:
+            level = "STRONG"
+        elif eligible and score >= cfg["alert_score"]:
+            level = "ALERT"
+        elif eligible and score >= cfg["watch_score"]:
+            level = "WATCH"
+        else:
+            level = "NONE"
+        info = {"direction": d, "level": level, "score": round(float(score), 1), "eligible": bool(eligible),
+                "ext": float(ext), "ext_atr": float(ext / atr), "rec_ratio": float(ratio),
+                "speed_ratio": float(speed_ratio), "speed_move": speed_move,
+                "cvd": cvd_now, "cvd_base": cvd_base, "spike": float(spike), "ob": ob,
+                "pts": {"recovery": pts_rec, "speed": pts_speed, "cvd": pts_cvd,
+                        "spike": pts_spike, "book": pts_book}}
+        key = (1 if eligible else 0, score)
+        if best is None or key > best[0]:
+            best = (key, info)
+    if best is None:
+        return {"direction": None, "level": "NONE", "score": 0.0, "eligible": False, "ext": 0.0, "ext_atr": 0.0,
+                "rec_ratio": 0.0, "speed_ratio": 0.0, "speed_move": speed_move, "cvd": cvd_now,
+                "cvd_base": cvd_base, "spike": float(spike), "ob": ob, "pts": {}}
+    return best[1]
+
+
+def pm_rev_run(ss, frame, t0, H, offset, t0_time, base, px, ticks, lead, now, remaining, run_avg, opts):
+    """يجمّع المدخلات من الـ Ticks والشموع والمؤشرات القائدة، يشغّل الكاشف، ويسجّل التنبيه مرة واحدة لكل دورة/اتجاه."""
+    cfg = dict(REV_DEFAULT)
+    for k in ("ext_mult", "min_recovery", "alert_score", "fast_win"):
+        if k in opts:
+            cfg[k] = opts[k]
+    cfg["strong_score"] = max(cfg["alert_score"] + 15, 75)
+    cfg["watch_score"] = max(cfg["alert_score"] - 15, 30)
+
+    atr = pm_horizon_atr(frame, H, offset, t0_time)
+    seg_hi = float(frame["high"].iloc[t0:].max())
+    seg_lo = float(frame["low"].iloc[t0:].min())
+    tk = [p for ts, p in ticks if ts >= t0_time]
+    win_hi = max([seg_hi, px] + tk)
+    win_lo = min([seg_lo, px] + tk)
+
+    # تاريخ CVD/الحجم/الدفتر (عيّنة كل تحديث)
+    hist = ss.setdefault("pm_rev_hist", [])
+    if lead and lead.get("n", 0) > 0:
+        hist.append({"ts": now, "cvd": lead.get("cvd_fast"), "rate": lead.get("vol_rate"),
+                     "src": lead.get("vol_src"), "ob": float(lead["L"][0])})
+        while hist and hist[0]["ts"] < now - 900:
+            hist.pop(0)
+    recent = [h for h in hist if now - h["ts"] <= 8]
+    cv = [h["cvd"] for h in recent if h["cvd"] is not None]
+    cvd_now = float(np.mean(cv)) if cv else None
+    old = [h["cvd"] for h in hist if now - 150 <= h["ts"] <= now - 40 and h["cvd"] is not None]
+    cvd_base = float(np.mean(old)) if len(old) >= 6 else None
+    obs = [h["ob"] for h in recent if h["ob"] is not None]
+    ob = float(np.mean(obs)) if obs else None
+    spike = 1.0
+    srcs = [h["src"] for h in recent if h["rate"] is not None and h["src"]]
+    if srcs:
+        src = srcs[-1]
+        cur = [h["rate"] for h in recent if h["src"] == src and h["rate"] is not None]
+        prev = [h["rate"] for h in hist if h["src"] == src and h["rate"] is not None and now - 300 <= h["ts"] <= now - 40]
+        if cur and len(prev) >= 8:
+            med = float(np.median(prev))
+            if med > 0:
+                spike = float(np.mean(cur)) / med
+
+    # سرعة آخر fast_win ثانية من الـ Ticks
+    cut = now - cfg["fast_win"]
+    older = [p for ts, p in ticks if cut - 20 <= ts <= cut]
+    speed_move = (px - older[-1]) if older else None
+
+    res = pm_rev_detect(base, win_hi, win_lo, px, atr, speed_move, cvd_now, cvd_base, spike, ob, cfg)
+
+    # المسافة المطلوبة فعلًا للتسوية (متوسط آخر دقيقة)
+    a = 0.0
+    if run_avg is not None and remaining <= 60:
+        a = min(max(1 - remaining / 60.0, 0.0), 0.98)
+    req_level = (base - a * run_avg) / (1 - a) if a > 0 else base
+    need = z_need = 0.0
+    feas = 1.0
+    if res["direction"]:
+        need = (req_level - px) if res["direction"] == "UP" else (px - req_level)
+        sig_min = max(atr, 1e-9) / (1.6 * np.sqrt(H))
+        z_need = float(need / (sig_min * np.sqrt(pm_eff_remaining(max(remaining, 1.0) / 60.0))))
+        feas = float(_clip(1 - max(0.0, z_need - 2.0) / 2.0))
+    res.update({"atr": float(atr), "win_hi": float(win_hi), "win_lo": float(win_lo), "need": float(need),
+                "z_need": float(z_need), "feas": feas, "warming": speed_move is None,
+                "req_level": float(req_level), "cfg": cfg, "remaining": float(remaining), "new": False})
+
+    if res["level"] in ("ALERT", "STRONG") and res["direction"] and remaining >= 5:
+        ss["pm_rev_last"] = {"win": float(t0_time), "dir": res["direction"], "level": res["level"],
+                             "score": res["score"], "ts": now, "need": float(need), "feas": feas, "H": H}
+        try:
+            with db() as conn:
+                dup = conn.execute("SELECT 1 FROM pm_rev_log WHERE horizon=? AND window_start=? AND direction=?",
+                                   (H, float(t0_time), res["direction"])).fetchone()
+                if not dup:
+                    conn.execute(
+                        "INSERT INTO pm_rev_log (created_at,horizon,window_start,direction,level,score,price,base,need,remaining,atr) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (datetime.now(timezone.utc).isoformat(), H, float(t0_time), res["direction"], res["level"],
+                         float(res["score"]), float(px), float(base), float(need), float(remaining), float(atr)))
+                    res["new"] = True
+                    ss.setdefault("pm_rev_pending", []).append(
+                        {"ts": now, "dir": res["direction"], "level": res["level"], "score": res["score"], "H": H,
+                         "px": float(px), "base": float(base), "need": float(need), "feas": feas,
+                         "remaining": float(remaining)})
+        except Exception:
+            pass
+    return res
+
+
+def pm_stabilize(state, win_id, p_up, raw_side, gated, min_conf, remaining, override=None,
+                 confirm=3, freeze_last=12, flip_margin=0.05, exit_margin=0.06):
+    """
+    يثبّت قرار UP/DOWN/SKIP عشان ما يتقلبش كل تحديث:
+      - دخول: القرار الخام لازم يثبت `confirm` قراءات ورا بعض
+      - خروج: الثقة في الجهة الحالية تقل عن (min_conf - exit_margin) لـ `confirm` قراءات
+      - قلب الاتجاه: الجهة العكسية تثبت `confirm` قراءات وثقتها >= min_conf + flip_margin
+      - آخر `freeze_last` ثانية: القرار متجمّد
+      - override (ارتداد قوي متوافق مع القرار الخام) بيغيّر القرار فورًا
+    """
+    if state.get("win") != win_id:
+        state.clear()
+        state.update(win=win_id, dir="SKIP", cand=None, cand_n=0, weak_n=0, changes=0)
+    cur = state["dir"]
+
+    def _conf(d):
+        return p_up if d == "UP" else 1.0 - p_up
+
+    def _set(new):
+        if new != state["dir"]:
+            state["changes"] += 1
+        state.update(dir=new, cand=None, cand_n=0, weak_n=0)
+
+    if override in ("UP", "DOWN"):
+        _set(override)
+        return {"dir": state["dir"], "frozen": False, "changes": state["changes"], "pending": 0}
+
+    if raw_side in ("UP", "DOWN") and not gated:
+        if state["cand"] == raw_side:
+            state["cand_n"] += 1
+        else:
+            state["cand"], state["cand_n"] = raw_side, 1
+    else:
+        state["cand"], state["cand_n"] = None, 0
+
+    frozen = remaining is not None and remaining < freeze_last
+    if not frozen:
+        if cur == "SKIP":
+            if state["cand_n"] >= confirm:
+                _set(state["cand"])
+        else:
+            opp = "DOWN" if cur == "UP" else "UP"
+            if state["cand"] == opp and state["cand_n"] >= confirm and _conf(opp) >= min_conf + flip_margin:
+                _set(opp)
+            else:
+                if gated or _conf(cur) < min_conf - exit_margin:
+                    state["weak_n"] += 1
+                else:
+                    state["weak_n"] = 0
+                if state["weak_n"] >= confirm:
+                    _set("SKIP")
+    return {"dir": state["dir"], "frozen": frozen, "changes": state["changes"], "pending": state["cand_n"]}
+
+
 def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_sec, auto_log, opts):
-    """حالة لحظية: Index الحالي + Baseline + مؤشرات قائدة + احتمال + قرار. بيتحدث كل ثانيتين."""
+    """حالة لحظية: Index الحالي + Baseline + مؤشرات قائدة + كاشف ارتداد + احتمال + قرار مثبّت. بيتحدث كل ثانيتين."""
     ss = st.session_state
     px, src, latency = get_live_index()
     if px is None:
@@ -2076,15 +2372,21 @@ def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_
     ticks = ss.setdefault("pm_ticks", [])
     ticks.append((now, px))
     del ticks[:-4000]
-    if ss.get("pm_frame") is None or now - ss.get("pm_frame_ts", 0) > 20:
-        frame, fsrc = get_pm_frame()
-        if frame is not None:
-            ss["pm_frame"], ss["pm_frame_ts"], ss["pm_frame_src"] = frame, now, fsrc
+    W_sec = H * 60
+    t0_time = pm_window_start(H, offset, now)
+
+    frame = ss.get("pm_frame")
+    age = now - ss.get("pm_frame_ts", 0)
+    stale = frame is None or age > 20
+    if not stale and float(frame["time"].iloc[-1]) < t0_time - 0.5 and age > 3:
+        stale = True  # دورة جديدة بدأت وشمعتها لسه مش في البيانات
+    if stale:
+        fr, fsrc = get_pm_frame()
+        if fr is not None:
+            ss["pm_frame"], ss["pm_frame_ts"], ss["pm_frame_src"] = fr, now, fsrc
     frame = ss.get("pm_frame")
     if frame is None:
         return {"error": "تعذر جلب شموع الدقيقة."}
-    W_sec = H * 60
-    t0_time = pm_window_start(H, offset, now)
     t = frame["time"].to_numpy(float)
     idx0 = np.where(np.abs(t - t0_time) < 1)[0]
     if len(idx0) == 0:
@@ -2113,9 +2415,11 @@ def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_
             a = 1 - remaining / 60.0
             eff_px = a * running_avg + (1 - a) * px
 
-    # --- المؤشرات القائدة ---
+    # --- المؤشرات القائدة (بتتجلب لو القائدة أو كاشف الارتداد شغّالين) ---
+    use_lead = bool(opts.get("use_lead", True))
+    use_rev = bool(opts.get("use_rev", True))
     lead, adj = None, 0.0
-    if opts.get("use_lead", True):
+    if use_lead or use_rev:
         cached = ss.get("pm_lead_cache")
         if cached and now - cached[0] < 1.0:
             venues, lat_l = cached[1], cached[2]
@@ -2127,22 +2431,45 @@ def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_
         lead["lat"] = lat_l
         wl, nl = pm_load_vec(100 + H, LEAD_PRIOR)
         Lv = np.array(lead["L"], dtype=float)
-        mult = float(opts.get("lead_mult", 1.0))
+        mult = float(opts.get("lead_mult", 1.0)) if use_lead else 0.0
         adj = float((Lv * wl).sum() * mult)
         lead.update({"adj": adj, "n_updates": nl, "w": wl, "mult": mult})
+
+    # --- كاشف الارتداد ---
+    rev, rev_adj, rev_dir = None, 0.0, None
+    if use_rev:
+        try:
+            rev = pm_rev_run(ss, frame, t0, H, offset, t0_time, base, px, ticks, lead, now, remaining, running_avg, opts)
+        except Exception as exc:  # الكاشف مايوقفش باقي النظام
+            rev = None
+            ss["pm_rev_error"] = str(exc)
+        if rev and rev["level"] in ("ALERT", "STRONG") and float(opts.get("rev_strength", 1.0)) > 0:
+            sgn = 1 if rev["direction"] == "UP" else -1
+            tilt = float(_clip((rev["score"] - 45) / 55.0) * 1.2 * float(opts.get("rev_strength", 1.0)) * rev["feas"])
+            rev_adj, rev_dir = sgn * tilt, rev["direction"]
 
     x, e, _ = pm_features(frame, i, t0, H, e=e, live_price=eff_px, start=base)
     w, n_upd = pm_load(H)
     p_base = float(_sig(x @ w))
-    p_up = float(_sig(float(x @ w) + adj))
-    side, ev, conf = pm_decide(p_up, payout_up, payout_down, min_edge, min_conf)
+    p_up = float(_sig(float(x @ w) + adj + rev_adj))
+    raw_side, ev, conf = pm_decide(p_up, payout_up, payout_down, min_edge, min_conf)
     gate = None
-    if side != "SKIP" and lead and lead["n"] > 0 and opts.get("require_agree", True):
-        d = 1 if side == "UP" else -1
-        if abs(adj) >= 0.25 and np.sign(adj) != d:
-            side, gate = "SKIP", "تعارض مع المؤشرات القائدة"
-    if side != "SKIP" and latency > opts.get("max_latency", 2.5):
-        side, gate = "SKIP", "تأخر بيانات السعر"
+    if raw_side != "SKIP" and lead and lead["n"] > 0 and opts.get("require_agree", True) and use_lead:
+        d = 1 if raw_side == "UP" else -1
+        if abs(adj) >= 0.25 and np.sign(adj) != d and raw_side != rev_dir:
+            raw_side, gate = "SKIP", "تعارض مع المؤشرات القائدة"
+    if raw_side != "SKIP" and latency > opts.get("max_latency", 2.5):
+        raw_side, gate = "SKIP", "تأخر بيانات السعر"
+
+    side, stab = raw_side, None
+    if opts.get("stabilize", True):
+        override = rev_dir if (rev_dir and raw_side == rev_dir) else None
+        stab = pm_stabilize(ss.setdefault("pm_stab", {}), f"{H}-{int(t0_time)}", p_up, raw_side, bool(gate), min_conf,
+                            remaining, override=override, confirm=int(opts.get("stab_confirm", 3)))
+        side = stab["dir"]
+        if side != raw_side:
+            ev, conf = pm_side_ev(p_up, side, payout_up, payout_down)
+
     closed = remaining < cutoff_sec
     stake = 0.0
     if side != "SKIP":
@@ -2152,30 +2479,52 @@ def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_
     logged = False
     if auto_log and side != "SKIP" and not closed:
         with db() as conn:
-            dup = conn.execute("SELECT 1 FROM pm_predictions WHERE horizon=? AND window_start=?", (H, t0_time)).fetchone()
+            # مرة لكل جهة في الدورة: لو الإشارة المثبّتة اتغيّرت (مثلاً بسبب ارتداد) بتتسجل كإشارة جديدة
+            dup = conn.execute("SELECT 1 FROM pm_predictions WHERE horizon=? AND window_start=? AND side=?",
+                               (H, t0_time, side)).fetchone()
             if not dup:
-                lead_js = json.dumps({"L": [float(v) for v in lead["L"]], "mult": lead["mult"]}) if lead else None
+                lead_js = None
+                if (lead and lead["mult"] > 0) or rev_adj:
+                    lead_js = json.dumps({"L": [float(v) for v in lead["L"]] if (lead and lead["mult"] > 0) else None,
+                                          "mult": float(lead["mult"]) if lead else 0.0, "rev": float(rev_adj)})
                 conn.execute("""INSERT INTO pm_predictions (created_at,horizon,window_start,decision_min,start_price,price_now,
                     p_up,side,payout_up,payout_down,ev,features,lead) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                              (datetime.now(timezone.utc).isoformat(), H, t0_time, e, base, px, p_up, side,
                               payout_up, payout_down, ev, json.dumps([float(v) for v in x]), lead_js))
                 logged = True
     chart = [(datetime.fromtimestamp(ts, CAIRO).strftime("%H:%M:%S"), p) for ts, p in ticks if ts >= t0_time]
-    return {"p_up": p_up, "p_base": p_base, "side": side, "ev": ev, "conf": conf, "e": e, "remaining": remaining,
-            "base": base, "base_src": base_src, "px": px, "src": src, "latency": latency, "z": float(x[0]),
-            "closed": closed, "n_updates": n_upd, "n_ticks": len(ticks), "running_avg": running_avg,
-            "eff_px": eff_px, "logged": logged, "lead": lead, "gate": gate, "stake": stake,
+    return {"p_up": p_up, "p_base": p_base, "side": side, "raw_side": raw_side, "ev": ev, "conf": conf, "e": e,
+            "remaining": remaining, "base": base, "base_src": base_src, "px": px, "src": src, "latency": latency,
+            "z": float(x[0]), "closed": closed, "n_updates": n_upd, "n_ticks": len(ticks),
+            "running_avg": running_avg, "eff_px": eff_px, "logged": logged, "lead": lead, "gate": gate,
+            "stake": stake, "rev": rev, "rev_adj": rev_adj, "stab": stab,
             "ends_at": datetime.fromtimestamp(t0_time + W_sec, CAIRO).strftime("%H:%M:%S"),
             "now": now_cairo().strftime("%H:%M:%S"), "chart": chart, "window_start": t0_time, "H": H}
+
+
+def _pm_settle(frame, t, ticks, ws, H, now):
+    """سعر التسوية: متوسط Ticks آخر دقيقة لو متاحة، وإلا تقدير من شمعة آخر دقيقة. يرجع (settle, expired)."""
+    end_t = ws + H * 60
+    pts = [p for ts, p in ticks if end_t - 60 <= ts <= end_t]
+    if len(pts) >= 8:
+        return float(np.mean(pts)), False
+    idx = np.where(np.abs(t - (ws + (H - 1) * 60)) < 1)[0]
+    if len(idx) == 0:
+        return None, (now - ws > 7200)
+    k = idx[0]
+    settle = float((frame["open"].iloc[k] + frame["high"].iloc[k] + frame["low"].iloc[k] + frame["close"].iloc[k]) / 4)
+    return settle, False
 
 
 def pm_resolve_open():
     with db() as conn:
         rows = conn.execute("SELECT id,horizon,window_start,start_price,side,payout_up,payout_down,p_up,features,lead "
                             "FROM pm_predictions WHERE outcome='OPEN'").fetchall()
+        rrows = conn.execute("SELECT id,horizon,window_start,direction,base FROM pm_rev_log WHERE outcome='OPEN'").fetchall()
     now = time.time()
     due = [r for r in rows if r[2] + r[1] * 60 + 20 <= now]
-    if not due:
+    rdue = [r for r in rrows if r[2] + r[1] * 60 + 20 <= now]
+    if not due and not rdue:
         return 0
     frame, _ = get_pm_frame()
     if frame is None:
@@ -2184,19 +2533,12 @@ def pm_resolve_open():
     ticks = st.session_state.get("pm_ticks", [])
     done = 0
     for sid, H, ws, start, side, pu, pd_, p_up, feats, lead_js in due:
-        end_t = ws + H * 60
-        pts = [p for ts, p in ticks if end_t - 60 <= ts <= end_t]
-        if len(pts) >= 8:
-            settle = float(np.mean(pts))  # متوسط Ticks حقيقية جمعها التطبيق في آخر دقيقة
-        else:
-            idx = np.where(np.abs(t - (ws + (H - 1) * 60)) < 1)[0]
-            if len(idx) == 0:
-                if now - ws > 7200:
-                    with db() as conn:
-                        conn.execute("UPDATE pm_predictions SET outcome='EXPIRED' WHERE id=?", (sid,))
-                continue
-            k = idx[0]
-            settle = float((frame["open"].iloc[k] + frame["high"].iloc[k] + frame["low"].iloc[k] + frame["close"].iloc[k]) / 4)
+        settle, expired = _pm_settle(frame, t, ticks, ws, H, now)
+        if settle is None:
+            if expired:
+                with db() as conn:
+                    conn.execute("UPDATE pm_predictions SET outcome='EXPIRED' WHERE id=?", (sid,))
+            continue
         up = settle > start  # المساواة = Down
         model_correct = int((p_up > 0.5) == up)
         correct = int((side == "UP") == up) if side != "SKIP" else None
@@ -2204,14 +2546,17 @@ def pm_resolve_open():
         y = 1.0 if up else 0.0
         xv = np.array(json.loads(feats), dtype=float)
         w, n_upd = pm_load(H)
-        if lead_js:  # تعلّم أوزان المؤشرات القائدة
+        if lead_js:  # تعلّم أوزان المؤشرات القائدة (مع احتساب أثر الارتداد وقت القرار)
             try:
                 ld = json.loads(lead_js)
-                Lv, mult = np.array(ld["L"], dtype=float), float(ld.get("mult", 1.0))
-                wl, nl = pm_load_vec(100 + H, LEAD_PRIOR)
-                p_l = float(_sig(float(xv @ w) + float((Lv * wl).sum() * mult)))
-                wl = wl - 0.05 * ((p_l - y) * Lv * mult + 0.01 * (wl - LEAD_PRIOR))
-                pm_save_vec(100 + H, np.clip(wl, -0.3, 2.0), nl + 1)
+                Lraw, mult = ld.get("L"), float(ld.get("mult", 1.0))
+                rev_term = float(ld.get("rev", 0.0))
+                if Lraw is not None and mult > 0:
+                    Lv = np.array(Lraw, dtype=float)
+                    wl, nl = pm_load_vec(100 + H, LEAD_PRIOR)
+                    p_l = float(_sig(float(xv @ w) + float((Lv * wl).sum() * mult) + rev_term))
+                    wl = wl - 0.05 * ((p_l - y) * Lv * mult + 0.01 * (wl - LEAD_PRIOR))
+                    pm_save_vec(100 + H, np.clip(wl, -0.3, 2.0), nl + 1)
             except Exception:
                 pass
         w = pm_online_step(w, xv, y)
@@ -2220,7 +2565,91 @@ def pm_resolve_open():
             conn.execute("UPDATE pm_predictions SET outcome=?,end_price=?,correct=?,model_correct=?,pnl=? WHERE id=?",
                          ("UP" if up else "DOWN", settle, correct, model_correct, pnl, sid))
         done += 1
+    for rid, H, ws, direction, base in rdue:
+        settle, expired = _pm_settle(frame, t, ticks, ws, H, now)
+        if settle is None:
+            if expired:
+                with db() as conn:
+                    conn.execute("UPDATE pm_rev_log SET outcome='EXPIRED' WHERE id=?", (rid,))
+            continue
+        up = settle > base
+        win = int((direction == "UP") == up)
+        with db() as conn:
+            conn.execute("UPDATE pm_rev_log SET outcome=?,end_price=?,win=? WHERE id=?",
+                         ("UP" if up else "DOWN", settle, win, rid))
+        done += 1
     return done
+
+
+# ---------------------- واجهة تنبيه الارتداد ----------------------
+
+_BEEP_HTML = """<script>
+try{const C=window.AudioContext||window.webkitAudioContext;const a=new C();
+[0,0.22,0.44].forEach(function(t){const o=a.createOscillator(),g=a.createGain();
+o.connect(g);g.connect(a.destination);o.frequency.value=__F__;g.gain.value=0.25;
+o.start(a.currentTime+t);o.stop(a.currentTime+t+0.15);});}catch(e){}
+</script>"""
+
+
+def _beep(freq):
+    try:
+        import streamlit.components.v1 as components
+        components.html(_BEEP_HTML.replace("__F__", str(int(freq))), height=0)
+    except Exception:
+        pass
+
+
+def format_rev_telegram(a):
+    d = "🟢 ارتداد صاعد" if a["dir"] == "UP" else "🔴 ارتداد هابط"
+    tag = "قوي جدًا" if a["level"] == "STRONG" else "تنبيه"
+    need = a["need"]
+    need_txt = (f"لسه محتاج {need:,.0f}$ عشان التسوية تتقلب" if need > 0
+                else "السعر عدّى مستوى التسوية المطلوب ✅")
+    return (f"⚡ MEXC {a['H']}m — {d} ({tag})\n"
+            f"سكور {a['score']:.0f} | باقي {a['remaining']:.0f}ث\n"
+            f"Index: {a['px']:,.2f} | Baseline: {a['base']:,.2f}\n{need_txt}\n"
+            "⚠️ تنبيه بحثي وليس نصيحة مالية\n@WHYNOTBLY7")
+
+
+def render_rev_banner(live, sound=True, tg=False):
+    """بانر + صوت + إشعار + Telegram لتنبيهات الارتداد (مرة واحدة لكل تنبيه جديد)."""
+    ss = st.session_state
+    now = time.time()
+    pend = [p for p in ss.get("pm_rev_pending", []) if now - p["ts"] <= 60]
+    ss["pm_rev_pending"] = []
+    for a in pend:
+        word = "صاعد" if a["dir"] == "UP" else "هابط"
+        try:
+            st.toast(f"⚡ ارتداد {word} — سكور {a['score']:.0f}")
+        except Exception:
+            pass
+        if sound:
+            _beep(988 if a["dir"] == "UP" else 440)
+        if tg:
+            send_telegram(format_rev_telegram(a))
+
+    rev = live.get("rev")
+    if rev and rev.get("level") in ("ALERT", "STRONG") and rev.get("direction"):
+        up = rev["direction"] == "UP"
+        tag = "قوي جدًا 🔥" if rev["level"] == "STRONG" else "تنبيه"
+        need = rev["need"]
+        need_txt = f"{need:,.0f}$" if need > 0 else "عدّاه ✅"
+        sub = f"باقي {live['remaining']:.0f}ث | سكور {rev['score']:.0f}"
+        if rev["feas"] < 0.5:
+            sub += f" | ⚠️ بعيد عن مستوى التسوية (z={rev['z_need']:.1f}) فتأثيره على الاحتمال محدود"
+        decision_card(
+            f"⚡ ارتداد {'صاعد 🟢' if up else 'هابط 🔴'} — {tag}", "up" if up else "down", sub,
+            [("الامتداد", f"{rev['ext']:,.0f}$ ({rev['ext_atr']:.1f}×ATR)"),
+             ("الاسترداد", f"{rev['rec_ratio'] * 100:.0f}%"),
+             ("المطلوب للتسوية", need_txt),
+             ("قرار النظام", {"UP": "UP 🟢", "DOWN": "DOWN 🔴", "SKIP": "تجاهل ⏸️"}[live["side"]])])
+        return
+    last = ss.get("pm_rev_last")
+    if last and abs(last["win"] - live["window_start"]) < 1 and now - last["ts"] <= 45:
+        st.info(f"⚡ تنبيه ارتداد {'صاعد' if last['dir'] == 'UP' else 'هابط'} اتسجل قبل {now - last['ts']:.0f}ث "
+                f"(سكور {last['score']:.0f}) — الحالة الحالية: {rev['level'] if rev else '—'}")
+    elif rev and rev.get("level") == "WATCH" and rev.get("direction"):
+        st.info(f"👀 مراقبة: ارتداد {'صاعد' if rev['direction'] == 'UP' else 'هابط'} بيتكوّن — سكور {rev['score']:.0f}")
 
 
 def render_pm_section(tg_enabled):
@@ -2245,7 +2674,23 @@ def render_pm_section(tg_enabled):
         lead_mult = c11.slider("قوة المؤشرات القائدة", 0.0, 2.0, 1.0, 0.1)
         require_agree = c12.checkbox("امنع الدخول عند التعارض معاها", value=True)
         pm_tg = st.checkbox("📡 أرسل إشارة الدخول إلى Telegram", value=False)
+        st.markdown("**⚡ كاشف الارتدادات الحادة + تثبيت الإشارة**")
+        c13, c14, c15 = st.columns(3)
+        use_rev = c13.checkbox("⚡ فعّل كاشف الارتداد", value=True, key="pm_use_rev")
+        rev_sound = c14.checkbox("🔔 صوت عند الارتداد", value=True, key="pm_rev_sound")
+        stabilize = c15.checkbox("🧊 تثبيت الإشارة (يمنع التقلب)", value=True, key="pm_stab_on")
+        c16, c17, c18 = st.columns(3)
+        rev_ext = c16.slider("أقل امتداد للارتداد (× ATR الدورة)", 0.3, 2.0, 0.8, 0.1)
+        rev_alert = c17.slider("حد تنبيه الارتداد (سكور)", 40, 90, 60, 5)
+        rev_strength = c18.slider("تأثير الارتداد على الاحتمال", 0.0, 2.0, 1.0, 0.1)
+        c19, c20, c21 = st.columns(3)
+        stab_confirm = c19.slider("قراءات التأكيد قبل تغيير الإشارة", 1, 6, 3)
+        rev_min_rec = c20.slider("أقل استرداد من الامتداد %", 10, 80, 25, 5) / 100.0
+        rev_tg = c21.checkbox("📡 أرسل تنبيه الارتداد إلى Telegram", value=False)
     st.caption(f"نقطة التعادل: Up ≥ {1 / (1 + pm_pu):.1%} | Down ≥ {1 / (1 + pm_pd):.1%} احتمال صح.")
+    if pm_live_on and not HAS_AUTOREFRESH:
+        st.warning("⚠️ التحديث اللحظي محتاج حزمة streamlit-autorefresh. ضيفها في requirements.txt "
+                   "(سطر: streamlit-autorefresh) وأعد تشغيل التطبيق، وإلا الصفحة مش هتتحدث لوحدها ومش هتوصلك تنبيهات.")
 
     b1, b2 = st.columns([3, 1])
     base_in = b1.number_input("Baseline (To Beat) من شاشة MEXC للدورة الحالية", min_value=0.0, value=0.0, step=0.01, format="%.2f")
@@ -2266,10 +2711,17 @@ def render_pm_section(tg_enabled):
     manual_click = (not pm_live_on) and st.button("🎯 توقّع الآن", type="primary")
     live = None
     if pm_live_on or manual_click:
-        opts = {"use_lead": use_lead, "lead_mult": lead_mult, "require_agree": require_agree, "max_latency": 2.5}
+        opts = {"use_lead": use_lead, "lead_mult": lead_mult, "require_agree": require_agree, "max_latency": 2.5,
+                "use_rev": use_rev, "rev_strength": rev_strength, "ext_mult": rev_ext, "min_recovery": rev_min_rec,
+                "alert_score": rev_alert, "fast_win": 30, "stabilize": bool(pm_live_on and stabilize),
+                "stab_confirm": stab_confirm}
         live = pm_live_state(pm_h, pm_off, pm_pu, pm_pd, pm_edge, pm_conf, pm_cut, pm_auto, opts)
 
-    tab_live, tab_lead, tab_train, tab_log = st.tabs(["⚡ لحظي", "🧭 المؤشرات القائدة", "🧠 التدريب والتقييم", "📒 السجل والأداء"])
+    if live is not None and not live.get("error"):
+        render_rev_banner(live, rev_sound, rev_tg)
+
+    tab_live, tab_rev, tab_lead, tab_train, tab_log = st.tabs(
+        ["⚡ لحظي", "🔄 الارتدادات", "🧭 المؤشرات القائدة", "🧠 التدريب والتقييم", "📒 السجل والأداء"])
 
     with tab_live:
         if live is None:
@@ -2298,20 +2750,29 @@ def render_pm_section(tg_enabled):
             m4.metric("احتمال بدون القائدة", f"{live['p_base']:.1%}")
             st.caption(f"Baseline: {live['base_src']} | المصدر: {live['src']} ({live['latency'] * 1000:.0f}ms) | "
                        f"تحديثات تعلّم: {live['n_updates']} | Ticks: {live['n_ticks']}")
+            if live.get("stab"):
+                s_ = live["stab"]
+                txt = f"🧊 تثبيت الإشارة: تغييرات في الدورة = {s_['changes']}"
+                if live["raw_side"] != live["side"] or s_["pending"]:
+                    txt += f" | القراءة الخام الآن: {live['raw_side']} (تأكيد {s_['pending']})"
+                if s_["frozen"]:
+                    txt += " | متجمّدة (آخر ثواني)"
+                st.caption(txt)
             if live["running_avg"] is not None:
                 st.caption(f"آخر دقيقة: متوسط Index حتى الآن {live['running_avg']:,.2f} → السعر الفعّال في الحساب {live['eff_px']:,.2f} "
                            "(جزء من التسوية اتحدد فعلًا).")
             if live["logged"]:
-                st.success("📝 اتسجلت إشارة للدورة دي.")
+                st.success("📝 اتسجلت إشارة جديدة للدورة دي.")
                 if pm_tg:
                     sent_w = st.session_state.setdefault("pm_tg_sent", set())
-                    if live["window_start"] not in sent_w:
+                    sent_key = (live["window_start"], live["side"])
+                    if sent_key not in sent_w:
                         ok, msg = send_telegram(
                             f"🎯 MEXC {live['H']}m — {'UP 🟢' if live['side'] == 'UP' else 'DOWN 🔴'}\n"
                             f"احتمال Up: {live['p_up']:.1%} | ثقة {live['conf']:.1%} | EV {live['ev']:+.3f}\n"
                             f"Index: {live['px']:,.2f} | Baseline: {live['base']:,.2f}\n⚠️ تنبيه بحثي\n@WHYNOTBLY7")
                         if ok:
-                            sent_w.add(live["window_start"])
+                            sent_w.add(sent_key)
             if live["side"] == "SKIP" and not live["closed"] and not live["gate"]:
                 st.info("مفيش ميزة كفاية دلوقتي. التجاهل قرار صح كتير.")
             if len(live["chart"]) >= 2:
@@ -2319,6 +2780,72 @@ def render_pm_section(tg_enabled):
                 chart_df["Baseline"] = live["base"]
                 st.line_chart(chart_df)
             st.caption("⚠️ تأكد إن الـ Payout وBaseline اللي على شاشتك هما اللي كاتبهم هنا، وإن المنصة لسه بتقبل الدخول.")
+
+    with tab_rev:
+        if live is None:
+            st.info("شغّل التحديث اللحظي أولًا.")
+        elif live.get("error"):
+            st.error(live["error"])
+        elif not use_rev:
+            st.info("كاشف الارتداد متوقف من الإعدادات.")
+        else:
+            rev = live.get("rev")
+            if rev is None:
+                st.warning("كاشف الارتداد مش متاح دلوقتي" + (f": {st.session_state.get('pm_rev_error')}" if st.session_state.get("pm_rev_error") else "."))
+            else:
+                lvl_txt = {"STRONG": "🔥 ارتداد قوي جدًا", "ALERT": "⚡ تنبيه ارتداد", "WATCH": "👀 مراقبة", "NONE": "⚪ لا يوجد ارتداد حاد"}[rev["level"]]
+                ltone = "neutral" if rev["level"] == "NONE" else ("up" if rev["direction"] == "UP" else "down")
+                dir_ar = {"UP": "صاعد", "DOWN": "هابط", None: "—"}[rev["direction"]]
+                st.markdown(badge(lvl_txt, ltone) + badge(f"الاتجاه: {dir_ar}", ltone)
+                            + badge(f"ATR الدورة {rev['atr']:,.0f}$", "info")
+                            + badge(f"سكور {rev['score']:.0f}", ltone), unsafe_allow_html=True)
+                score_bar(rev["score"], ltone if ltone != "neutral" else "info")
+                if rev["warming"]:
+                    st.warning("⏳ جاري تجميع بيانات السرعة (محتاج حوالي 35 ثانية من فتح الصفحة قبل ما الكاشف يشتغل بدقة).")
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric("الامتداد عكس Baseline", f"{rev['ext']:,.0f}$", f"{rev['ext_atr']:.2f}× ATR")
+                r2.metric("الاسترداد", f"{rev['rec_ratio'] * 100:.0f}%")
+                sm = rev.get("speed_move")
+                r3.metric(f"حركة آخر {rev['cfg']['fast_win']}ث", f"{sm:+,.1f}$" if sm is not None else "—")
+                r4.metric("المطلوب للتسوية", f"{rev['need']:,.0f}$" if rev["need"] > 0 else "عدّاه ✅",
+                          f"z={rev['z_need']:.1f}")
+                pts = rev.get("pts", {})
+                if pts:
+                    st.write(f"**تفاصيل السكور:** استرداد {pts['recovery']:.0f}/25 · سرعة {pts['speed']:.0f}/25 · "
+                             f"CVD {pts['cvd']:.0f}/25 · طفرة حجم {pts['spike']:.0f}/15 · دفتر أوامر {pts['book']:.0f}/10")
+                cvd_t = "غير متاح" if rev["cvd"] is None else f"{rev['cvd']:+.1f}%"
+                cvd_b = "غير متاح" if rev["cvd_base"] is None else f"{rev['cvd_base']:+.1f}%"
+                ob_t = "غير متاح" if rev["ob"] is None else f"{rev['ob']:+.2f}"
+                st.caption(f"CVD سريع الآن {cvd_t} (قبلها {cvd_b}) · مضاعف الحجم ×{rev['spike']:.1f} · ميل الدفتر {ob_t} · "
+                           f"نطاق الدورة {rev['win_lo']:,.1f} – {rev['win_hi']:,.1f} · مستوى التسوية المطلوب {rev['req_level']:,.1f}")
+                if rev["direction"] and rev["feas"] < 0.5:
+                    st.warning("الارتداد ده بعيد عن مستوى التسوية المطلوب (التسوية = متوسط آخر دقيقة)، فتأثيره على الاحتمال بيتقلل تلقائيًا. "
+                               "ممكن يفيدك في تداول Futures، لكن مش بالضرورة يقلب نتيجة Up/Down.")
+                if live.get("rev_adj"):
+                    st.caption(f"تأثير الارتداد على logit الاحتمال: {live['rev_adj']:+.2f}")
+            with db() as conn:
+                rlog = pd.read_sql_query(
+                    "SELECT created_at,horizon,direction,level,score,price,base,need,remaining,outcome,win "
+                    "FROM pm_rev_log ORDER BY id DESC LIMIT 300", conn)
+            if rlog.empty:
+                st.info("لسه مفيش تنبيهات ارتداد مسجلة.")
+            else:
+                dn = rlog[rlog.outcome.isin(["UP", "DOWN"])]
+                q1, q2, q3 = st.columns(3)
+                q1.metric("تنبيهات مسجلة", len(rlog))
+                q2.metric("محسومة", len(dn))
+                q3.metric("صحيحة (اتجاه التسوية)", f"{dn['win'].mean():.1%}" if len(dn) else "—")
+                if len(dn) >= 5:
+                    rows_b = []
+                    for name, sub_df in (("مبكر (باقي > 60ث)", dn[dn.remaining > 60]),
+                                         ("متأخر (≤ 60ث)", dn[dn.remaining <= 60]),
+                                         ("STRONG", dn[dn.level == "STRONG"]), ("ALERT", dn[dn.level == "ALERT"])):
+                        if len(sub_df):
+                            rows_b.append({"الشريحة": name, "عدد": len(sub_df), "الدقة": f"{sub_df['win'].mean():.1%}"})
+                    if rows_b:
+                        show_df(pd.DataFrame(rows_b))
+                st.caption("«صحيحة» = اتجاه الارتداد طلع نفس اتجاه التسوية النهائية مقابل الـ Baseline. شغّل التطبيق وقت كافي قبل ما تثق في النسبة.")
+                show_df(rlog.head(30))
 
     with tab_lead:
         if live is None or live.get("error"):
@@ -2330,6 +2857,8 @@ def render_pm_section(tg_enabled):
             if ld["n"] == 0:
                 st.error("مفيش ولا بورصة رجّعت بيانات (غالبًا Binance/Bybit/OKX محجوبين من السيرفر). جرّب تشغيل التطبيق من سيرفر مختلف.")
             else:
+                if ld["mult"] == 0:
+                    st.caption("ℹ️ المؤشرات القائدة معروضة للمعلومية فقط (مش داخلة في حساب الاحتمال لأنها متوقفة من الإعدادات).")
                 bias = float(np.tanh(ld["adj"]))
                 vtone = "up" if bias > 0.12 else "down" if bias < -0.12 else "neutral"
                 vtxt = "🟢 القائدة تميل Up" if bias > 0.12 else "🔴 القائدة تميل Down" if bias < -0.12 else "⚪ القائدة محايدة"
@@ -2385,8 +2914,8 @@ def render_pm_section(tg_enabled):
                 st.write("**الدقة حسب الدقيقة داخل الدورة**")
                 show_df(pd.DataFrame(r["by_elapsed"]))
                 st.write("أوزان النموذج: " + " | ".join(f"{n}={v:+.2f}" for n, v in zip(PM_NAMES, pe["w"])))
-                st.caption("التدريب التاريخي بيغطي الميزات السعرية بس (المؤشرات القائدة مفيش لها تاريخ مجاني) — هي بتتعلم من السجل الحي. "
-                           "الباكتست بيفترض Payout ثابت؛ القياس الحقيقي هو السجل الحي.")
+                st.caption("التدريب التاريخي بيغطي الميزات السعرية بس (المؤشرات القائدة وكاشف الارتداد مفيش لهم تاريخ مجاني) — "
+                           "بيتعلموا من السجل الحي. الباكتست بيفترض Payout ثابت؛ القياس الحقيقي هو السجل الحي.")
         else:
             st.info("اضغط الزر لتدريب وتقييم النموذج على بيانات الدقيقة التاريخية.")
 
@@ -2481,7 +3010,7 @@ settings = {
 # ============================ Main navigation ============================
 
 SECTIONS = ["🔎 الماسح", "💥 رادار PUMP/DUMP", "🚀 DEX", "📊 سجل الإشارات", "🧠 الذاكرة والتعلّم", "🧪 اختبار تاريخي", "🎯 MEXC Up/Down"]
-section = st.radio("القسم", SECTIONS, horizontal=True, label_visibility="collapsed")
+section = st.radio("القسم", SECTIONS, horizontal=True, label_visibility="collapsed", key="main_section")
 
 if section == "🔎 الماسح":
     state_key = "scan_main"
@@ -2757,18 +3286,18 @@ elif section == "🎯 MEXC Up/Down":
     render_pm_section(telegram_enabled)
 
 # المؤقّت في آخر السكريبت عشان ما يقاطعش فحص شغّال
-try:
-    from streamlit_autorefresh import st_autorefresh
-    _pm_fast = section == "🎯 MEXC Up/Down" and st.session_state.get("pm_live_on", True)
-    _radar_auto = section == "💥 رادار PUMP/DUMP" and st.session_state.get("r_auto", False)
-    if _pm_fast:
-        st_autorefresh(interval=2_000, key="bly7_pm_live_refresh")
-    elif _radar_auto:
-        st_autorefresh(interval=10_000, key="bly7_radar_refresh")
-    else:
-        st_autorefresh(interval=60_000, key="bly7_auto_monitor")
-except Exception:
-    pass
+if HAS_AUTOREFRESH:
+    try:
+        _pm_fast = section == "🎯 MEXC Up/Down" and st.session_state.get("pm_live_on", True)
+        _radar_auto = section == "💥 رادار PUMP/DUMP" and st.session_state.get("r_auto", False)
+        if _pm_fast:
+            st_autorefresh(interval=2_000, key="bly7_pm_live_refresh")
+        elif _radar_auto:
+            st_autorefresh(interval=10_000, key="bly7_radar_refresh")
+        else:
+            st_autorefresh(interval=60_000, key="bly7_auto_monitor")
+    except Exception:
+        pass
 
 st.markdown("---")
 st.caption("BLY7TRADER | بيانات من واجهات المنصات العامة؛ قد تحدث انقطاعات/حدود معدل. "
