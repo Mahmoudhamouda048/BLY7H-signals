@@ -2308,58 +2308,66 @@ def pm_rev_run(ss, frame, t0, H, offset, t0_time, base, px, ticks, lead, now, re
     return res
 
 
-def pm_stabilize(state, win_id, p_up, raw_side, gated, min_conf, remaining, override=None,
-                 confirm=3, freeze_last=12, flip_margin=0.05, exit_margin=0.06):
+def pm_lean_stabilize(state, win_id, p_up, override, remaining, elapsed, confirm=3,
+                      enter=0.03, flip=0.07, freeze_last=12):
     """
-    يثبّت قرار UP/DOWN/SKIP عشان ما يتقلبش كل تحديث:
-      - دخول: القرار الخام لازم يثبت `confirm` قراءات ورا بعض
-      - خروج: الثقة في الجهة الحالية تقل عن (min_conf - exit_margin) لـ `confirm` قراءات
-      - قلب الاتجاه: الجهة العكسية تثبت `confirm` قراءات وثقتها >= min_conf + flip_margin
-      - آخر `freeze_last` ثانية: القرار متجمّد
-      - override (ارتداد قوي متوافق مع القرار الخام) بيغيّر القرار فورًا
+    اتجاه مرجّح ثابت طول الدورة (مفيش «تجاهل»):
+      - بيتحدد أول ما احتمال Up يبعد عن 50% بمقدار `enter` لـ `confirm` قراءات ورا بعض
+      - بعد كده مايتغيّرش إلا لو: (1) انعكاس مؤكد من الكاشف (override) أو (2) الجهة العكسية وصلت 50%+flip لـ `confirm` قراءات
+      - آخر `freeze_last` ثانية: مجمّد (إلا لو لسه ما اتحددش، فبيتحدد فورًا على الميل الحالي)
     """
     if state.get("win") != win_id:
         state.clear()
-        state.update(win=win_id, dir="SKIP", cand=None, cand_n=0, weak_n=0, changes=0)
-    cur = state["dir"]
+        state.update(win=win_id, dir=None, cand=None, cand_n=0, changes=0, locked_at=None, reason="")
+    prev = state["dir"]
+    frozen = remaining is not None and remaining < freeze_last
 
-    def _conf(d):
-        return p_up if d == "UP" else 1.0 - p_up
-
-    def _set(new):
-        if new != state["dir"]:
+    def _lock(new, reason):
+        if state["dir"] is not None and new != state["dir"]:
             state["changes"] += 1
-        state.update(dir=new, cand=None, cand_n=0, weak_n=0)
-
-    if override in ("UP", "DOWN"):
-        _set(override)
-        return {"dir": state["dir"], "frozen": False, "changes": state["changes"], "pending": 0}
-
-    if raw_side in ("UP", "DOWN") and not gated:
-        if state["cand"] == raw_side:
-            state["cand_n"] += 1
-        else:
-            state["cand"], state["cand_n"] = raw_side, 1
-    else:
+        if state["locked_at"] is None:
+            state["locked_at"] = float(elapsed)
+        state["dir"], state["reason"] = new, reason
         state["cand"], state["cand_n"] = None, 0
 
-    frozen = remaining is not None and remaining < freeze_last
-    if not frozen:
-        if cur == "SKIP":
-            if state["cand_n"] >= confirm:
-                _set(state["cand"])
+    if override in ("UP", "DOWN"):
+        if override != state["dir"]:
+            _lock(override, "انعكاس")
+    elif state["dir"] is None:
+        if frozen:
+            _lock("UP" if p_up >= 0.5 else "DOWN", "أولية")
         else:
-            opp = "DOWN" if cur == "UP" else "UP"
-            if state["cand"] == opp and state["cand_n"] >= confirm and _conf(opp) >= min_conf + flip_margin:
-                _set(opp)
+            raw = "UP" if p_up >= 0.5 + enter else "DOWN" if p_up <= 0.5 - enter else None
+            if raw is not None:
+                state["cand_n"] = state["cand_n"] + 1 if state["cand"] == raw else 1
+                state["cand"] = raw
+                if state["cand_n"] >= confirm:
+                    _lock(raw, "أولية")
             else:
-                if gated or _conf(cur) < min_conf - exit_margin:
-                    state["weak_n"] += 1
-                else:
-                    state["weak_n"] = 0
-                if state["weak_n"] >= confirm:
-                    _set("SKIP")
-    return {"dir": state["dir"], "frozen": frozen, "changes": state["changes"], "pending": state["cand_n"]}
+                state["cand"], state["cand_n"] = None, 0
+    elif not frozen:
+        opp = "DOWN" if state["dir"] == "UP" else "UP"
+        conf_opp = (1.0 - p_up) if opp == "DOWN" else p_up
+        if conf_opp >= 0.5 + flip:
+            state["cand_n"] = state["cand_n"] + 1 if state["cand"] == opp else 1
+            state["cand"] = opp
+            if state["cand_n"] >= confirm:
+                _lock(opp, "تأكيد")
+        else:
+            state["cand"], state["cand_n"] = None, 0
+    return {"dir": state["dir"], "changed": state["dir"] != prev, "first": prev is None and state["dir"] is not None,
+            "reason": state["reason"], "locked_at": state["locked_at"], "changes": state["changes"],
+            "frozen": frozen, "pending": state["cand_n"]}
+
+
+def pm_strength(conf):
+    if conf >= 0.72:
+        return "قوية جدًا"
+    if conf >= 0.64:
+        return "قوية"
+    if conf >= 0.57:
+        return "متوسطة"
+    return "ضعيفة"
 
 
 def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_sec, auto_log, opts):
@@ -2452,29 +2460,34 @@ def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_
     w, n_upd = pm_load(H)
     p_base = float(_sig(x @ w))
     p_up = float(_sig(float(x @ w) + adj + rev_adj))
-    raw_side, ev, conf = pm_decide(p_up, payout_up, payout_down, min_edge, min_conf)
-    gate = None
-    if raw_side != "SKIP" and lead and lead["n"] > 0 and opts.get("require_agree", True) and use_lead:
-        d = 1 if raw_side == "UP" else -1
-        if abs(adj) >= 0.25 and np.sign(adj) != d and raw_side != rev_dir:
-            raw_side, gate = "SKIP", "تعارض مع المؤشرات القائدة"
-    if raw_side != "SKIP" and latency > opts.get("max_latency", 2.5):
-        raw_side, gate = "SKIP", "تأخر بيانات السعر"
-
-    side, stab = raw_side, None
+    # ---- الإشارة: اتجاه مرجّح دايمًا + قوة، ثابت طول الدورة، ويتغيّر بس مع انعكاس مؤكد ----
+    lean_raw = "UP" if p_up >= 0.5 else "DOWN"
+    gate = "تأخر بيانات السعر" if latency > opts.get("max_latency", 2.5) else None  # تحذير للعرض فقط
+    override = None
+    if rev and rev["level"] in ("ALERT", "STRONG") and rev["feas"] >= 0.5 and rev["direction"]:
+        if (rev["direction"] == "UP" and p_up >= 0.5) or (rev["direction"] == "DOWN" and p_up <= 0.5):
+            override = rev["direction"]
+    stab = None
     if opts.get("stabilize", True):
-        override = rev_dir if (rev_dir and raw_side == rev_dir) else None
-        stab = pm_stabilize(ss.setdefault("pm_stab", {}), f"{H}-{int(t0_time)}", p_up, raw_side, bool(gate), min_conf,
-                            remaining, override=override, confirm=int(opts.get("stab_confirm", 3)))
-        side = stab["dir"]
-        if side != raw_side:
-            ev, conf = pm_side_ev(p_up, side, payout_up, payout_down)
+        stab = pm_lean_stabilize(ss.setdefault("pm_stab", {}), f"{H}-{int(t0_time)}", p_up, override, remaining,
+                                 e * 60.0, confirm=int(opts.get("stab_confirm", 3)))
+        side = stab["dir"] or "SKIP"  # SKIP هنا = لسه بيتحدد الاتجاه
+        if stab["changed"]:
+            ss.setdefault("pm_sig_pending", []).append(
+                {"ts": now, "dir": stab["dir"], "first": stab["first"], "reason": stab["reason"], "H": H,
+                 "px": float(px), "base": float(base), "remaining": float(remaining)})
+    else:
+        side = lean_raw
+    ev, conf = pm_side_ev(p_up, side if side != "SKIP" else lean_raw, payout_up, payout_down)
+    strength = pm_strength(conf)
+    tradable = side != "SKIP" and ev >= min_edge
+    raw_side = lean_raw
 
     closed = remaining < cutoff_sec
     stake = 0.0
-    if side != "SKIP":
-        b = payout_up if side == "UP" else payout_down
-        kelly = (conf * b - (1 - conf)) / b
+    if tradable:
+        b_ = payout_up if side == "UP" else payout_down
+        kelly = (conf * b_ - (1 - conf)) / b_
         stake = float(np.clip(kelly * 0.25, 0, 0.05))
     logged = False
     if auto_log and side != "SKIP" and not closed:
@@ -2497,7 +2510,8 @@ def pm_live_state(H, offset, payout_up, payout_down, min_edge, min_conf, cutoff_
             "remaining": remaining, "base": base, "base_src": base_src, "px": px, "src": src, "latency": latency,
             "z": float(x[0]), "closed": closed, "n_updates": n_upd, "n_ticks": len(ticks),
             "running_avg": running_avg, "eff_px": eff_px, "logged": logged, "lead": lead, "gate": gate,
-            "stake": stake, "rev": rev, "rev_adj": rev_adj, "stab": stab,
+            "stake": stake, "rev": rev, "rev_adj": rev_adj, "stab": stab, "strength": strength,
+            "tradable": tradable,
             "ends_at": datetime.fromtimestamp(t0_time + W_sec, CAIRO).strftime("%H:%M:%S"),
             "now": now_cairo().strftime("%H:%M:%S"), "chart": chart, "window_start": t0_time, "H": H}
 
@@ -2628,6 +2642,26 @@ def render_rev_banner(live, sound=True, tg=False):
         if tg:
             send_telegram(format_rev_telegram(a))
 
+    for a in [p for p in ss.get("pm_sig_pending", []) if now - p["ts"] <= 60]:
+        word = "UP 🟢" if a["dir"] == "UP" else "DOWN 🔴"
+        if a["first"]:
+            try:
+                st.toast(f"🎯 الإشارة اتحددت: {word}")
+            except Exception:
+                pass
+        else:
+            try:
+                st.toast(f"🔄 الإشارة اتغيّرت إلى {word} — {a['reason']}")
+            except Exception:
+                pass
+            if sound and a["reason"] != "انعكاس":
+                _beep(988 if a["dir"] == "UP" else 440)
+            if tg:
+                send_telegram(f"🔄 MEXC {a['H']}m — الإشارة اتغيّرت إلى {word} ({a['reason']})\n"
+                              f"Index: {a['px']:,.2f} | Baseline: {a['base']:,.2f} | باقي {a['remaining']:.0f}ث\n"
+                              "⚠️ تنبيه بحثي وليس نصيحة مالية\n@WHYNOTBLY7")
+    ss["pm_sig_pending"] = []
+
     rev = live.get("rev")
     if rev and rev.get("level") in ("ALERT", "STRONG") and rev.get("direction"):
         up = rev["direction"] == "UP"
@@ -2642,7 +2676,7 @@ def render_rev_banner(live, sound=True, tg=False):
             [("الامتداد", f"{rev['ext']:,.0f}$ ({rev['ext_atr']:.1f}×ATR)"),
              ("الاسترداد", f"{rev['rec_ratio'] * 100:.0f}%"),
              ("المطلوب للتسوية", need_txt),
-             ("قرار النظام", {"UP": "UP 🟢", "DOWN": "DOWN 🔴", "SKIP": "تجاهل ⏸️"}[live["side"]])])
+             ("الإشارة الحالية", {"UP": "UP 🟢", "DOWN": "DOWN 🔴", "SKIP": "⏳ بيتحدد"}[live["side"]])])
         return
     last = ss.get("pm_rev_last")
     if last and abs(last["win"] - live["window_start"]) < 1 and now - last["ts"] <= 45:
@@ -2654,50 +2688,47 @@ def render_rev_banner(live, sound=True, tg=False):
 
 def render_pm_section(tg_enabled):
     st.subheader("🎯 MEXC Up/Down — BTC")
-    st.caption("Up يكسب لو سعر التسوية > Baseline، والتساوي = Down. التسوية = متوسط Index آخر دقيقة. "
-               "مفيش توقع 100% — النظام بيدخل بس لما فيه ميزة (EV) فوق التعادل وبيقيس دقته الحقيقية.")
-    with st.expander("⚙️ الإعدادات", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        pm_h = 5 if c1.selectbox("الدورة", ["5 دقائق", "15 دقيقة"]) == "5 دقائق" else 15
-        pm_pu = c2.number_input("Payout لـ Up (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
-        pm_pd = c3.number_input("Payout لـ Down (من الشاشة)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
-        c4, c5, c6 = st.columns(3)
-        pm_edge = c4.slider("أقل ميزة EV للدخول", 0.0, 0.5, 0.08, 0.01)
-        pm_conf = c5.slider("أقل ثقة", 0.50, 0.95, 0.62, 0.01)
-        pm_off = c6.number_input("إزاحة بداية الدورة (دقائق)", min_value=0, max_value=14, value=0, step=1)
-        c7, c8, c9 = st.columns(3)
-        pm_cut = c7.number_input("قفل الدخول قبل النهاية (ثواني)", min_value=0, max_value=120, value=15, step=5)
-        pm_live_on = c8.checkbox("⚡ تحديث لحظي كل ثانيتين", value=True, key="pm_live_on")
-        pm_auto = c9.checkbox("تسجيل تلقائي لأول إشارة في كل دورة", value=True)
-        c10, c11, c12 = st.columns(3)
-        use_lead = c10.checkbox("🧭 استخدم المؤشرات القائدة", value=True)
-        lead_mult = c11.slider("قوة المؤشرات القائدة", 0.0, 2.0, 1.0, 0.1)
-        require_agree = c12.checkbox("امنع الدخول عند التعارض معاها", value=True)
-        pm_tg = st.checkbox("📡 أرسل إشارة الدخول إلى Telegram", value=False)
-        st.markdown("**⚡ كاشف الارتدادات الحادة + تثبيت الإشارة**")
-        c13, c14, c15 = st.columns(3)
-        use_rev = c13.checkbox("⚡ فعّل كاشف الارتداد", value=True, key="pm_use_rev")
-        rev_sound = c14.checkbox("🔔 صوت عند الارتداد", value=True, key="pm_rev_sound")
-        stabilize = c15.checkbox("🧊 تثبيت الإشارة (يمنع التقلب)", value=True, key="pm_stab_on")
-        c16, c17, c18 = st.columns(3)
-        rev_ext = c16.slider("أقل امتداد للارتداد (× ATR الدورة)", 0.3, 2.0, 0.8, 0.1)
-        rev_alert = c17.slider("حد تنبيه الارتداد (سكور)", 40, 90, 60, 5)
-        rev_strength = c18.slider("تأثير الارتداد على الاحتمال", 0.0, 2.0, 1.0, 0.1)
-        c19, c20, c21 = st.columns(3)
-        stab_confirm = c19.slider("قراءات التأكيد قبل تغيير الإشارة", 1, 6, 3)
-        rev_min_rec = c20.slider("أقل استرداد من الامتداد %", 10, 80, 25, 5) / 100.0
-        rev_tg = c21.checkbox("📡 أرسل تنبيه الارتداد إلى Telegram", value=False)
-    st.caption(f"نقطة التعادل: Up ≥ {1 / (1 + pm_pu):.1%} | Down ≥ {1 / (1 + pm_pd):.1%} احتمال صح.")
+    st.caption("الإشارة بتتحدد لوحدها من أول الدورة وبتفضل ثابتة، وبتتغيّر بس لو حصل انعكاس مؤكد. "
+               "Up يكسب لو متوسط Index آخر دقيقة > Baseline، والتساوي = Down.")
+    t1, t2, t3 = st.columns([2, 2, 1])
+    pm_h = 5 if t1.radio("الدورة", ["5 دقائق", "15 دقيقة"], horizontal=True) == "5 دقائق" else 15
+    pm_pu = t2.number_input("Payout (من شاشة MEXC)", min_value=0.1, max_value=5.0, value=0.85, step=0.01)
+    rev_sound = t3.checkbox("🔔 صوت", value=True, key="pm_rev_sound")
+    with st.expander("⚙️ متقدم (مش لازم تلمسه)", expanded=False):
+        a1, a2, a3 = st.columns(3)
+        pm_pd_in = a1.number_input("Payout لـ Down (لو مختلف)", min_value=0.0, max_value=5.0, value=0.0, step=0.01)
+        pm_edge = a2.slider("أقل ميزة EV لاعتبار الإشارة قابلة للتنفيذ", 0.0, 0.3, 0.03, 0.01)
+        pm_off = a3.number_input("إزاحة بداية الدورة (دقائق)", min_value=0, max_value=14, value=0, step=1)
+        a4, a5, a6 = st.columns(3)
+        pm_cut = a4.number_input("قفل الدخول قبل النهاية (ثواني)", min_value=0, max_value=120, value=15, step=5)
+        pm_live_on = a5.checkbox("⚡ تحديث لحظي كل ثانيتين", value=True, key="pm_live_on")
+        pm_auto = a6.checkbox("تسجيل تلقائي للإشارات", value=True)
+        a7, a8, a9 = st.columns(3)
+        use_lead = a7.checkbox("🧭 المؤشرات القائدة", value=True)
+        lead_mult = a8.slider("قوة المؤشرات القائدة", 0.0, 2.0, 1.0, 0.1)
+        stab_confirm = a9.slider("قراءات التأكيد قبل تغيير الاتجاه", 1, 6, 3)
+        a10, a11, a12 = st.columns(3)
+        use_rev = a10.checkbox("⚡ كاشف الانعكاس", value=True, key="pm_use_rev")
+        rev_ext = a11.slider("أقل امتداد للانعكاس (× ATR الدورة)", 0.3, 2.0, 0.8, 0.1)
+        rev_alert = a12.slider("حد تنبيه الانعكاس (سكور)", 40, 90, 60, 5)
+        a13, a14, a15 = st.columns(3)
+        rev_strength = a13.slider("تأثير الانعكاس على الاحتمال", 0.0, 2.0, 1.0, 0.1)
+        rev_min_rec = a14.slider("أقل استرداد من الامتداد %", 10, 80, 25, 5) / 100.0
+        rev_tg = a15.checkbox("📡 Telegram للانعكاس وتغيّر الإشارة", value=False)
+        pm_tg = st.checkbox("📡 Telegram لإشارة الدورة (لو فيها ميزة)", value=False)
+        st.markdown("**Baseline (اختياري)** — لو كتبت «To Beat» من شاشة MEXC الدقة بتزيد. غير كده التطبيق بياخده من أول Tick.")
+        b1, b2 = st.columns([3, 1])
+        base_in = b1.number_input("Baseline للدورة الحالية", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+        b2.write("")
+        if b2.button("📌 ثبّت للدورة الحالية"):
+            st.session_state["pm_base_manual"] = (pm_window_start(pm_h, int(pm_off)), base_in)
+            st.toast("تم تثبيت Baseline للدورة الحالية فقط")
+    pm_pd = pm_pd_in if pm_pd_in > 0 else pm_pu
+    pm_conf = 0.62  # بيستخدم في تبويب التدريب والتقييم فقط
+    stabilize = True
     if pm_live_on and not HAS_AUTOREFRESH:
         st.warning("⚠️ التحديث اللحظي محتاج حزمة streamlit-autorefresh. ضيفها في requirements.txt "
                    "(سطر: streamlit-autorefresh) وأعد تشغيل التطبيق، وإلا الصفحة مش هتتحدث لوحدها ومش هتوصلك تنبيهات.")
-
-    b1, b2 = st.columns([3, 1])
-    base_in = b1.number_input("Baseline (To Beat) من شاشة MEXC للدورة الحالية", min_value=0.0, value=0.0, step=0.01, format="%.2f")
-    b2.write("")
-    if b2.button("📌 ثبّت للدورة الحالية"):
-        st.session_state["pm_base_manual"] = (pm_window_start(pm_h, pm_off), base_in)
-        st.toast("تم تثبيت Baseline للدورة الحالية فقط")
 
     _now_pm = time.time()
     if _now_pm - st.session_state.get("pm_resolve_ts", 0) > 15:
@@ -2711,37 +2742,64 @@ def render_pm_section(tg_enabled):
     manual_click = (not pm_live_on) and st.button("🎯 توقّع الآن", type="primary")
     live = None
     if pm_live_on or manual_click:
-        opts = {"use_lead": use_lead, "lead_mult": lead_mult, "require_agree": require_agree, "max_latency": 2.5,
+        opts = {"use_lead": use_lead, "lead_mult": lead_mult, "max_latency": 2.5,
                 "use_rev": use_rev, "rev_strength": rev_strength, "ext_mult": rev_ext, "min_recovery": rev_min_rec,
                 "alert_score": rev_alert, "fast_win": 30, "stabilize": bool(pm_live_on and stabilize),
                 "stab_confirm": stab_confirm}
-        live = pm_live_state(pm_h, pm_off, pm_pu, pm_pd, pm_edge, pm_conf, pm_cut, pm_auto, opts)
+        live = pm_live_state(pm_h, int(pm_off), pm_pu, pm_pd, pm_edge, pm_conf, pm_cut, pm_auto, opts)
 
     if live is not None and not live.get("error"):
         render_rev_banner(live, rev_sound, rev_tg)
 
     tab_live, tab_rev, tab_lead, tab_train, tab_log = st.tabs(
-        ["⚡ لحظي", "🔄 الارتدادات", "🧭 المؤشرات القائدة", "🧠 التدريب والتقييم", "📒 السجل والأداء"])
+        ["⚡ لحظي", "🔄 الانعكاسات", "🧭 المؤشرات القائدة", "🧠 التدريب والتقييم", "📒 السجل والأداء"])
 
     with tab_live:
         if live is None:
-            st.info("فعّل التحديث اللحظي من الإعدادات أو اضغط «توقّع الآن».")
+            st.info("فعّل التحديث اللحظي من «متقدم» أو اضغط «توقّع الآن».")
         elif live.get("error"):
             st.error(live["error"])
         else:
-            if live["closed"]:
-                label, tone = "🔒 الدخول مقفول", "neutral"
+            side, stab = live["side"], (live.get("stab") or {})
+            if side == "SKIP":
+                label, tone = "⏳ جاري تحديد الاتجاه", "neutral"
             else:
-                label, tone = {"UP": ("🟢 UP", "up"), "DOWN": ("🔴 DOWN", "down"), "SKIP": ("⏸️ تجاهل", "neutral")}[live["side"]]
+                label, tone = {"UP": ("🟢 UP", "up"), "DOWN": ("🔴 DOWN", "down")}[side]
+                if live["closed"]:
+                    label += " 🔒"
             sub = f"{live['now']} | باقي {live['remaining']:.0f}ث (تنتهي {live['ends_at']})"
             if live["gate"]:
-                sub += f" | سبب التجاهل: {live['gate']}"
+                sub += f" | ⚠️ {live['gate']}"
+            ev_txt = f"{live['ev']:+.3f} " + ("✅" if live["tradable"] else "⚠️")
             decision_card(label, tone, sub, [
-                ("احتمال Up", f"{live['p_up']:.1%}"),
+                ("قوة الإشارة", live["strength"]),
                 ("الثقة", f"{live['conf']:.1%}"),
-                ("EV لكل 1$", f"{live['ev']:+.3f}"),
-                ("نسبة دخول مقترحة", f"{live['stake'] * 100:.1f}%" if live["side"] != "SKIP" else "—"),
+                ("احتمال Up", f"{live['p_up']:.1%}"),
+                ("الميزة EV", ev_txt),
             ])
+            chips = ""
+            if stab.get("pending") is not None and stab.get("locked_at") is not None:
+                chips += badge(f"🔒 مثبّتة ({stab['reason']}) من ثانية {stab['locked_at']:.0f}", "info")
+                if stab["changes"]:
+                    chips += badge(f"اتغيّرت {stab['changes']} مرة", "warn")
+            elif side == "SKIP":
+                chips += badge("⏳ بيتأكد من الاتجاه", "neutral")
+            ld = live.get("lead")
+            if ld and ld.get("n", 0) > 0 and ld.get("mult", 0) > 0:
+                lb = float(np.tanh(ld["adj"]))
+                chips += (badge("🧭 القائدة: شراء ⬆️", "up") if lb > 0.12 else
+                          badge("🧭 القائدة: بيع ⬇️", "down") if lb < -0.12 else badge("🧭 القائدة: محايدة", "neutral"))
+            rv = live.get("rev")
+            if rv and rv.get("direction") and rv["level"] in ("ALERT", "STRONG"):
+                chips += badge(f"🔄 انعكاس {'صاعد' if rv['direction'] == 'UP' else 'هابط'} ({'قوي' if rv['level'] == 'STRONG' else 'تنبيه'})",
+                               "up" if rv["direction"] == "UP" else "down")
+            elif rv and rv.get("direction") and rv["level"] == "WATCH":
+                chips += badge(f"👀 انعكاس {'صاعد' if rv['direction'] == 'UP' else 'هابط'} بيتكوّن", "warn")
+            else:
+                chips += badge("🔄 مفيش انعكاس", "neutral")
+            st.markdown(chips, unsafe_allow_html=True)
+            if side != "SKIP" and not live["tradable"]:
+                st.caption("⚠️ ده الاتجاه المرجّح، لكن ميزته (EV) ضعيفة. اعتبره توجّه مش صفقة قوية.")
             st.progress(float(max(0.0, min(1.0, live["remaining"] / (live["H"] * 60)))))
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Index الآن", f"{live['px']:,.2f}", f"{live['px'] - live['base']:+,.2f} عن Baseline")
@@ -2750,31 +2808,21 @@ def render_pm_section(tg_enabled):
             m4.metric("احتمال بدون القائدة", f"{live['p_base']:.1%}")
             st.caption(f"Baseline: {live['base_src']} | المصدر: {live['src']} ({live['latency'] * 1000:.0f}ms) | "
                        f"تحديثات تعلّم: {live['n_updates']} | Ticks: {live['n_ticks']}")
-            if live.get("stab"):
-                s_ = live["stab"]
-                txt = f"🧊 تثبيت الإشارة: تغييرات في الدورة = {s_['changes']}"
-                if live["raw_side"] != live["side"] or s_["pending"]:
-                    txt += f" | القراءة الخام الآن: {live['raw_side']} (تأكيد {s_['pending']})"
-                if s_["frozen"]:
-                    txt += " | متجمّدة (آخر ثواني)"
-                st.caption(txt)
             if live["running_avg"] is not None:
                 st.caption(f"آخر دقيقة: متوسط Index حتى الآن {live['running_avg']:,.2f} → السعر الفعّال في الحساب {live['eff_px']:,.2f} "
                            "(جزء من التسوية اتحدد فعلًا).")
             if live["logged"]:
-                st.success("📝 اتسجلت إشارة جديدة للدورة دي.")
-                if pm_tg:
+                st.success("📝 اتسجلت الإشارة دي للدورة.")
+                if pm_tg and live["tradable"]:
                     sent_w = st.session_state.setdefault("pm_tg_sent", set())
                     sent_key = (live["window_start"], live["side"])
                     if sent_key not in sent_w:
                         ok, msg = send_telegram(
-                            f"🎯 MEXC {live['H']}m — {'UP 🟢' if live['side'] == 'UP' else 'DOWN 🔴'}\n"
+                            f"🎯 MEXC {live['H']}m — {'UP 🟢' if live['side'] == 'UP' else 'DOWN 🔴'} ({live['strength']})\n"
                             f"احتمال Up: {live['p_up']:.1%} | ثقة {live['conf']:.1%} | EV {live['ev']:+.3f}\n"
                             f"Index: {live['px']:,.2f} | Baseline: {live['base']:,.2f}\n⚠️ تنبيه بحثي\n@WHYNOTBLY7")
                         if ok:
                             sent_w.add(sent_key)
-            if live["side"] == "SKIP" and not live["closed"] and not live["gate"]:
-                st.info("مفيش ميزة كفاية دلوقتي. التجاهل قرار صح كتير.")
             if len(live["chart"]) >= 2:
                 chart_df = pd.DataFrame(live["chart"], columns=["t", "السعر"]).set_index("t")
                 chart_df["Baseline"] = live["base"]
